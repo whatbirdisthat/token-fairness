@@ -724,3 +724,138 @@ fn oscron_install_idempotent_via_fake_crontab() {
     assert!(!body2.contains("# i2p-scheduler:nightly"));
     let _ = std::fs::remove_dir_all(&d);
 }
+
+// ── report: every mode rendered (was only proven by the now-retired bash differential) ──────
+#[test]
+fn report_all_modes() {
+    let d = tmp("report");
+    let ds = d.to_str().unwrap();
+    let cal = d.join("cal.json");
+    let machine = d.join("m.json");
+    let sig = d.join("sig.json");
+    std::fs::write(
+        &sig,
+        r#"{"verdict":"hook-signal-available","guard_mode":"live-ceiling","events":{}}"#,
+    )
+    .unwrap();
+    let env = [
+        ("I2P_CALIBRATION_FILE", cal.to_str().unwrap()),
+        ("I2P_MACHINE_REGISTRY", machine.to_str().unwrap()),
+        ("I2P_SIGNAL_FINDINGS", sig.to_str().unwrap()),
+    ];
+    // seed calibration (flat + hierarchical) and a registered+armed job with a ledger
+    for i in 1..=6 {
+        let act = (100000 + i * 500).to_string();
+        run(
+            &["calibrate", "close", "plan:medium", "100000", &act],
+            "",
+            &env,
+        );
+    }
+    run(
+        &[
+            "calibrate",
+            "close",
+            "experiment/code-gen/opus",
+            "100000",
+            "120000",
+        ],
+        "",
+        &env,
+    );
+    run(
+        &[
+            "registry",
+            "register",
+            ds,
+            "nightly",
+            "17 22 * * *",
+            "1500000",
+            "./.i2p/jobs/nightly.json",
+            "./p.txt",
+            "the big fan-out",
+        ],
+        "",
+        &env,
+    );
+    run(&["registry", "arm", ds, "nightly", "oscron"], "", &env);
+    run(
+        &[
+            "ledger", "init", ds, "nightly", "reviewer", "a,b,c,d", "1500000", "15",
+        ],
+        "",
+        &env,
+    );
+    run(&["ledger", "mark-done", ds, "nightly", "a"], "", &env);
+    run(
+        &[
+            "ledger",
+            "pause",
+            ds,
+            "nightly",
+            "ceiling",
+            "85",
+            "1700003600",
+            "99000",
+            "1700000000",
+        ],
+        "",
+        &env,
+    );
+
+    let has = |args: &[&str], needles: &[&str]| {
+        let (got, rc) = run(args, "", &env);
+        assert_eq!(rc, 0, "args={args:?}");
+        for n in needles {
+            assert!(got.contains(n), "report {args:?} missing {n:?} in:\n{got}");
+        }
+    };
+    has(
+        &["report", ds, "--scheduled"],
+        &["📋 Scheduled jobs", "nightly", "OS-cron armed"],
+    );
+    has(
+        &["report", ds, "--estimator"],
+        &["📈 Estimator convergence", "plan:medium"],
+    );
+    has(
+        &["report", ds, "--kaizen"],
+        &["KAIZEN", "champion", "MAPE", "plan:medium"],
+    );
+    has(
+        &["report", ds, "--taxonomy"],
+        &["taxonomy", "opus", "plan:medium"],
+    );
+    has(&["report", ds, "--brief"], &["🛡️", "nightly"]);
+    has(
+        &["report", ds],
+        &["📋 Scheduled jobs", "📈 Estimator convergence"],
+    );
+    // empty repo + no calibration → --brief is silent
+    let empty = tmp("reportempty");
+    let env2 = [(
+        "I2P_CALIBRATION_FILE",
+        empty.join("none.json").to_str().unwrap().to_string(),
+    )];
+    let env2: Vec<(&str, &str)> = env2.iter().map(|(k, v)| (*k, v.as_str())).collect();
+    let (got, _) = run(&["report", empty.to_str().unwrap(), "--brief"], "", &env2);
+    assert_eq!(got, "");
+    let _ = std::fs::remove_dir_all(&d);
+    let _ = std::fs::remove_dir_all(&empty);
+}
+
+// kaizen/taxonomy on an EMPTY calibration render their "no data" branches
+#[test]
+fn report_kaizen_taxonomy_empty() {
+    let d = tmp("reportkz");
+    let env = [(
+        "I2P_CALIBRATION_FILE",
+        d.join("none.json").to_str().unwrap().to_string(),
+    )];
+    let env: Vec<(&str, &str)> = env.iter().map(|(k, v)| (*k, v.as_str())).collect();
+    let (k, _) = run(&["report", d.to_str().unwrap(), "--kaizen"], "", &env);
+    assert!(k.contains("legacy EWMA-0.4 champion"));
+    let (t, _) = run(&["report", d.to_str().unwrap(), "--taxonomy"], "", &env);
+    assert!(t.contains("no classes yet"));
+    let _ = std::fs::remove_dir_all(&d);
+}
