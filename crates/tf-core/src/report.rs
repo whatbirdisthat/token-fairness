@@ -4,7 +4,7 @@
 //! and 📈 ESTIMATOR (the calibration convergence per profile/class). `--brief` is the
 //! SessionStart dashboard — two tight lines, and SILENT when there is nothing to report.
 
-use crate::{calibrate, fmt, registry, state, Out};
+use crate::{calibrate, fmt, observe, registry, state, Out};
 use serde_json::Value;
 
 fn signal_findings_path() -> String {
@@ -123,10 +123,17 @@ pub fn dispatch(argv: &[String]) -> Out {
             "--estimator" => mode = "estimator",
             "--kaizen" => mode = "kaizen",
             "--taxonomy" => mode = "taxonomy",
+            "--honesty" => mode = "honesty",
             "--brief" => mode = "brief",
             s if s.starts_with('-') => {}
             s => dir = s.to_string(),
         }
+    }
+
+    // The Honesty Observatory (P-I) is its own cross-time surface — delegate to observe,
+    // bypassing the scheduler/estimator sections this report otherwise renders.
+    if mode == "honesty" {
+        return Out::ok(observe::report(observe::Period::Month));
     }
 
     let jobs = list_jobs(&dir);

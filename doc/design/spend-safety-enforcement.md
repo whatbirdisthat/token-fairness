@@ -86,6 +86,23 @@ work only. The freeze becomes self-enforcing the moment CORE-B exists.
     `tf budget check` DENY, every `tf ledger pause`, and `session.json` over time.
   - *Wiring:* a Stop/PostToolUse hook appends the period's events; the report is idempotently regenerated.
 
+  **Status (renderer increment, 2026-06-12).** The capture foundation (commit `9879515`) plus the
+  **efficacy rollup renderer** have landed in `crates/tf-core/src/observe.rs`:
+  - `tf observe [--period day|week|month] [--write <dir>]` and `tf report --honesty` fold the event
+    log into a longitudinal markdown report — the **#SAVES vs #BLOWN headline (equal prominence,
+    HON-1)**, per-period table (saves/blown/procedural/allows/est-guarded), denies-by-reason
+    histogram, and Mermaid (`pie` decision-mix + `xychart-beta` SAVES-vs-BLOWN trend). `--write`
+    regenerates `<dir>/honesty.md` idempotently. No-arg `tf observe` keeps its JSON tally (back-compat).
+  - `observe::log_blown(reason)` added so the BLOWN side of the headline is wireable (its trigger —
+    a detected lockout/window-exhaustion — is still to be wired into the ceiling/spend path).
+  - **Deferred (needs a capture extension):** spend-by-model × period and estimate-vs-actual (MAPE)
+    over time. Per-event `model`/`tokens`/`cost` are not yet recorded, so the renderer **declares
+    that section as pending rather than fabricate it** (the same HON-1 rule that forbids hiding
+    BLOWNs forbids inventing spend). Lands when a session-end hook appends a `spend` event; per-session
+    spend is available now via `tf spend`, estimator accuracy via `tf report --estimator`.
+  - Pure fold/render functions are frozen-vector unit-tested; dispatch IO follows the project
+    convention (covered by the e2e bash gates, like `spend.rs`).
+
 ## Red-team acceptance — how we PROVE it
 `tests/red-team-spend.sh` actively tries to violate each invariant and MUST be blocked/flagged:
 1. Fan-out with no budget → **denied** (INV-1).
