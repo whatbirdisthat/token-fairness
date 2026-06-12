@@ -11,8 +11,8 @@ use std::collections::HashMap;
 use std::io::{IsTerminal, Read};
 use std::process::exit;
 use tf_core::{
-    budget, calibrate, ceiling, estimate, ledger, offpeak, registry, report, routing, scheduler,
-    signal, snapshot, spend, Out,
+    budget, calibrate, ceiling, estimate, ledger, observe, offpeak, registry, report, routing,
+    scheduler, signal, snapshot, spend, Out,
 };
 
 /// Lenient flag parser: accepts `--flag value` and `--flag=value`, collects bare
@@ -162,6 +162,7 @@ fn main() {
         "budget" => budget::dispatch(rest),
         "preflight-spend" => budget::preflight_spend(&read_stdin()),
         "spend" => spend::dispatch(rest),
+        "observe" => observe::dispatch(rest),
         "" => Out::err("usage: tf <command> [args]", 2),
         other => Out::err(format!("tf: unknown command '{}'", other), 2),
     };

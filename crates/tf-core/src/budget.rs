@@ -129,7 +129,10 @@ pub fn preflight_spend(payload: &str) -> Out {
     let tool = v.get("tool_name").and_then(|x| x.as_str()).unwrap_or("");
     let (session_cap, per_fanout_cap, baseline) = load_cfg();
     let spent = spent_since(baseline);
+    let est = read_arm().unwrap_or(0);
     if let Some(reason) = gate_spend(tool, read_arm(), session_cap, per_fanout_cap, spent) {
+        // Capture the deny for the Honesty Observatory (P-I) — SAVES + procedural denies + friction.
+        crate::observe::log_gate(tool, "deny", &reason, est);
         let deny = serde_json::json!({
             "hookSpecificOutput": {
                 "hookEventName": "PreToolUse",
@@ -138,6 +141,10 @@ pub fn preflight_spend(payload: &str) -> Out {
             }
         });
         return Out::ok(serde_json::to_string(&deny).unwrap_or_default() + "\n");
+    }
+    // Log only fan-out (Workflow) launches; ordinary single-agent allows would be noise.
+    if tool == "Workflow" {
+        crate::observe::log_gate(tool, "allow", "armed", est);
     }
     Out::default()
 }

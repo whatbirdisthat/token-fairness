@@ -102,6 +102,27 @@ pub fn write_atomic(path: &str, content: &str) -> std::io::Result<()> {
     std::fs::rename(&tmp, path)
 }
 
+/// Append one newline-terminated line, creating parents. Best-effort O_APPEND (atomic for small
+/// writes on local fs) — the append-only ledger pattern shared by estimator-accuracy.jsonl and
+/// the honesty event log. A lost line is acceptable; a corrupt file is not.
+pub fn append_line(path: &str, line: &str) -> std::io::Result<()> {
+    use std::io::Write;
+    if let Some(dir) = Path::new(path).parent() {
+        if !dir.as_os_str().is_empty() {
+            std::fs::create_dir_all(dir)?;
+        }
+    }
+    let mut f = std::fs::OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(path)?;
+    f.write_all(line.as_bytes())?;
+    if !line.ends_with('\n') {
+        f.write_all(b"\n")?;
+    }
+    Ok(())
+}
+
 /// `obj.key` as f64 with a default (mirrors jq `(.key // default)` for numbers).
 pub fn num(v: &Value, key: &str, default: f64) -> f64 {
     v.get(key).and_then(|x| x.as_f64()).unwrap_or(default)

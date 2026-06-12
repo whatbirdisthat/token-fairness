@@ -13,6 +13,7 @@ pub mod ensemble;
 pub mod estimate;
 pub mod fmt;
 pub mod ledger;
+pub mod observe;
 pub mod offpeak;
 pub mod registry;
 pub mod report;
