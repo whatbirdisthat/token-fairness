@@ -20,6 +20,7 @@ pub mod routing;
 pub mod scheduler;
 pub mod signal;
 pub mod snapshot;
+pub mod spend;
 pub mod state;
 
 /// The uniform result of a CLI verb: what to print where, and the process exit code.

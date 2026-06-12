@@ -92,7 +92,8 @@ fn flag<'a>(argv: &'a [String], key: &str) -> Option<&'a str> {
 }
 fn has(argv: &[String], key: &str) -> bool {
     let pfx = format!("--{}", key);
-    argv.iter().any(|a| a == &pfx || a.starts_with(&format!("{}=", pfx)))
+    argv.iter()
+        .any(|a| a == &pfx || a.starts_with(&format!("{}=", pfx)))
 }
 
 pub fn dispatch(argv: &[String]) -> Out {
@@ -179,7 +180,7 @@ mod tests {
     #[test]
     fn no_declared_budget_is_refused() {
         // INV-1: the exact failure — a fan-out with no budget.total.
-        assert_eq!(decide(2_000_000, 150_000, 0, 0).0, false);
+        assert!(!decide(2_000_000, 150_000, 0, 0).0);
         assert_eq!(decide(2_000_000, 150_000, 0, 0).1, "no-budget-declared");
         assert_eq!(decide(2_000_000, 150_000, 0, -5).1, "no-budget-declared");
     }
@@ -210,12 +211,18 @@ mod tests {
     #[test]
     fn exactly_at_caps_is_allowed_just_over_is_not() {
         assert_eq!(decide(1_000, 1_000, 0, 1_000), (true, "ok")); // est == per_fanout_cap, spent+est == session_cap
-        assert_eq!(decide(1_000, 1_000, 1, 1_000), (false, "exceeds-session-cap")); // one token over
-        assert_eq!(decide(10_000, 1_000, 0, 1_001), (false, "exceeds-per-fanout-cap"));
+        assert_eq!(
+            decide(1_000, 1_000, 1, 1_000),
+            (false, "exceeds-session-cap")
+        ); // one token over
+        assert_eq!(
+            decide(10_000, 1_000, 0, 1_001),
+            (false, "exceeds-per-fanout-cap")
+        );
     }
 
     #[test]
     fn saturating_add_does_not_overflow() {
-        assert_eq!(decide(i64::MAX, i64::MAX, i64::MAX, i64::MAX).0, true);
+        assert!(decide(i64::MAX, i64::MAX, i64::MAX, i64::MAX).0);
     }
 }

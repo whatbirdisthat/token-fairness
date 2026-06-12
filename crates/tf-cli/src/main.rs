@@ -12,7 +12,7 @@ use std::io::{IsTerminal, Read};
 use std::process::exit;
 use tf_core::{
     budget, calibrate, ceiling, estimate, ledger, offpeak, registry, report, routing, scheduler,
-    signal, snapshot, Out,
+    signal, snapshot, spend, Out,
 };
 
 /// Lenient flag parser: accepts `--flag value` and `--flag=value`, collects bare
@@ -160,6 +160,7 @@ fn main() {
         "run-offpeak" => offpeak_run::run(rest),
         "route" => routing::route(rest),
         "budget" => budget::dispatch(rest),
+        "spend" => spend::dispatch(rest),
         "" => Out::err("usage: tf <command> [args]", 2),
         other => Out::err(format!("tf: unknown command '{}'", other), 2),
     };
