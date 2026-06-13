@@ -2,7 +2,7 @@
   "$schema": "https://json.schemastore.org/claude-code-marketplace.json",
   "name": "token-fairness",
   "description": "A single-plugin marketplace for the token-aware job scheduler — a fair, defensive guardian for a solo builder's usage meter. It estimates a wide fan-out's cost (with a converging estimate→actual EWMA), gates every throttled wave against the LIVE rolling rate-limit window (fail-closed), halts before a paid lockout, and resumes cheaply from a per-job ledger — with supervised off-peak runs that reserve a morning allowance. The standalone Rust successor to idea-to-production CONCIERGE's bash token-scheduler: one tested static binary (tf), proven byte-for-byte against the original. Install it alongside any marketplace; it stands alone.",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "owner": {
     "name": "whatbirdisthat",
     "email": "95787+whatbirdisthat@users.noreply.github.com"
@@ -16,7 +16,7 @@
       "source": "./plugins/scheduler",
       "displayName": "TOKEN-FAIRNESS — The token-aware job scheduler",
       "description": "A fair, defensive guardian for a solo builder's usage meter, ported from CONCIERGE's bash token-scheduler to one tested Rust binary (tf). Estimates fan-out cost with a converging estimate→actual EWMA, requires an explicit +Xk budget, throttles waves, and gates each wave against the LIVE rate-limit window (fail-closed) — halting before a paid lockout and resuming cheaply from a per-job ledger that records only what's LEFT. Off-peak runs reserve a morning allowance. Durable, session-safe scheduled jobs (project + per-machine registry) re-arm after a crash and install as OS-cron. A Stop hook writes the session.json .tokens actual-spend signal that makes convergence work. Determinism is proven by cargo frozen-vectors + a byte-for-byte differential against the bash oracle. /schedule routes a job; the token-scheduler skill is the discipline that calls tf.",
-      "version": "0.1.0",
+      "version": "0.1.1",
       "author": {
         "name": "whatbirdisthat",
         "email": "95787+whatbirdisthat@users.noreply.github.com",

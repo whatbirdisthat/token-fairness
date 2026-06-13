@@ -53,11 +53,26 @@ tf preflight --profile "$S/profiles/reviewer-fanout.json" --width 26
 
 Show the user the estimate (`est_total`) in plain terms before fanning out.
 
-## 2. Budget gate — consent is mandatory
+## 2. Budget gate — consent is mandatory, and it must become a MACHINE cap
 
-A wide fan-out **must** carry an explicit `+Xk` budget directive (sets the Workflow `budget` API hard
-cap). **No directive → refuse to run autonomously** and ask the user for one. The budget is a physical
-ceiling even if every other check failed (post-mortem Rule 2). One unit per wave at most
+A wide fan-out **must** carry an explicit `+Xk` budget — but a number chosen in a dialog is **not a
+cap until it is one of these** (Issue #2: a UI-selected "+400k" enforced nothing; the run spent
+2.47×). Establish an enforceable cap *before wave 1*:
+
+```bash
+tf doctor                                  # readiness: session writer? budget headroom? (exit≠0 ⇒ not armed)
+tf budget set --per-fanout-cap <Xk>        # FIRST: raise the per-fan-out ceiling (default 150k) to your +Xk
+tf budget arm <Xk>                         # the +Xk consent → preflight-spend DENIES an unarmed Workflow
+```
+
+`arm` **refuses an est above `per_fanout_cap`** (default 150k) — so a large fan-out (e.g. +400k) arms
+nothing until you raise the cap with `tf budget set --per-fanout-cap` (and `--session-cap` if the
+cumulative ceiling is tighter). Check `tf budget status` to see both.
+
+`tf budget arm` makes the signal-INDEPENDENT cap real: the `PreToolUse(Workflow|Agent|Task)` hook
+(`preflight-spend`) **denies an unarmed Workflow outright** and refuses an over-cap arm — it does not
+need any live `.rate_limits` (there is none inside a Workflow). For an off-peak/scheduled job, the
+ledger budget (step 3) + `tf ledger spend` is the equivalent local cap. One unit per wave at most
 `profile.fanout.max_parallel` — never the 80–130 that caused the lockout.
 
 ## 3. Open the resume ledger
@@ -82,11 +97,14 @@ tf gate --headroom 15        # add --require-offpeak --now $(date +%s) for overn
 Act on the verdict — **do not override it**:
 
 - **CONTINUE** → spawn the next wave (≤ `max_parallel`). After each unit completes, `tf ledger
-  mark-done`; record its real token cost via `tf calibrate close <profile> <est> <actual>` so the next
-  estimate sharpens.
-- **HALT** → the live window hit the ceiling. `tf ledger pause . <job-id> ceiling <pct> <reset>
-  <spent>` and **STOP**. Do not retry, do not "push through". Resume after the window resets (step 6).
-- **ASK** → no fresh live signal (fail closed). Surface to the user; never spawn blind.
+  mark-done` **and `tf ledger spend . <job-id> <unit_actual>`** (the local cap — it returns HALT once
+  cumulative spend reaches `budget_total`, signal-independent); record real cost via `tf calibrate
+  close <profile> <est> <actual>` so the next estimate sharpens.
+- **HALT** → the live window hit the ceiling (or `ledger spend` crossed the budget). `tf ledger pause
+  . <job-id> ceiling <pct> <reset> <spent>` and **STOP**. Do not retry, do not "push through".
+- **ASK** → no fresh live signal (fail closed). Surface to the user; never spawn blind. For an
+  **unattended** run that must not pause for input, gate with `tf gate --on-no-signal halt` so a blind
+  L1 becomes a HALT (the budget arm/ledger remains the real backstop).
 - **DEFER** (with `--require-offpeak`) → not in the quiet hours; go to step 5.
 
 A rate-limit error returned by any agent is itself a HALT: stop, checkpoint, do not retry the unit.
@@ -120,9 +138,16 @@ never re-derive pointed-to context.
 
 ## 7. Close out
 
-When `remaining` is empty: report what was done, the actual vs estimated cost (the calibration has
-already learned from it), and any `failed` units. If the job cleared without tripping the meter — that's
-the green gate. *"Light is green, trap is clean."*
+When `remaining` is empty: report what was done, the actual vs estimated cost, and any `failed` units.
+**Feed convergence the MEASURED actual** — a fan-out's subagent tokens never moved `session.json`, so
+the auto-delta is 0. Close with the ground truth from `tf spend` (which reconciles every subagent /
+workflow transcript):
+
+```bash
+tf plan-close --actual "$(tf spend --session <sid> | jq .total_tokens)"
+```
+
+If the job cleared without tripping the meter — that's the green gate. *"Light is green, trap is clean."*
 
 ## Durable & session-safe (survive a crash)
 
@@ -154,5 +179,9 @@ This is why **every** plan brackets `plan-open`/`plan-close` — no sample, no c
    old session.json token-count.
 2. **Fail closed.** No signal → ASK/HALT, never CONTINUE.
 3. **Throttle, don't flood.** Waves of ≤ `max_parallel`.
-4. **Budget is consent.** No `+Xk` → no autonomous wide fan-out.
+4. **Budget is consent, and consent must be a machine cap.** No `+Xk` → no autonomous wide fan-out.
+   A UI number enforces nothing — `tf budget arm <Xk>` (or a ledger budget + `tf ledger spend`) is
+   what actually denies the spawn. An **unarmed Workflow is auto-denied**; run `tf doctor` first.
 5. **A HALT is cheap** because the ledger makes resume cheap. Halting early is always correct.
+6. **Feed convergence the measured actual** (`tf plan-close --actual $(tf spend …)`) — subagent
+   tokens are invisible to `session.json`, so the auto-delta would silently log nothing.

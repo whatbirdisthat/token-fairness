@@ -156,6 +156,7 @@ fn main() {
         "plan-close" => scheduler::plan_close(rest),
         "preflight" => scheduler::preflight(rest),
         "preflight-fanout" => scheduler::preflight_fanout(&read_stdin()),
+        "doctor" => scheduler::doctor(rest),
         "oscron" => oscron::dispatch(rest),
         "run-offpeak" => offpeak_run::run(rest),
         "route" => routing::route(rest),

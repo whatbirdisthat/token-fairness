@@ -859,3 +859,206 @@ fn report_kaizen_taxonomy_empty() {
     assert!(t.contains("no classes yet"));
     let _ = std::fs::remove_dir_all(&d);
 }
+
+// ── Issue #2 fixes: plan-close --actual, ledger spend, gate --on-no-signal, doctor ──────────
+
+#[test]
+fn plan_close_actual_feeds_convergence_and_is_backward_compatible() {
+    // Issue #2 Fix 3: an externally-measured actual (e.g. from `tf spend`) feeds convergence even
+    // though the session-delta is 0 (subagent tokens never moved session.json).
+    let d = tmp("planactual");
+    let sess = d.join("s.json");
+    let pop = d.join("po.json");
+    let cal = d.join("c.json");
+    let env = [
+        ("I2P_SESSION_FILE", sess.to_str().unwrap()),
+        ("I2P_PLANOPEN_FILE", pop.to_str().unwrap()),
+        ("I2P_CALIBRATION_FILE", cal.to_str().unwrap()),
+    ];
+    std::fs::write(&sess, r#"{"tokens":0}"#).unwrap();
+    line(
+        &["plan-open", "large", "400000"],
+        "",
+        &env,
+        r#"{"opened":"plan:large","est":400000,"baseline_tokens":0}"#,
+        0,
+    );
+    // --actual 800000 → ratio exactly 2.0, convergence folds a sample (session delta is still 0).
+    line(
+        &["plan-close", "--actual", "800000"],
+        "",
+        &env,
+        r#"{"class":"plan:large","est":400000,"actual":800000,"convergence":{"samples":1,"mean_ratio":2.0000,"sd":0.0000,"p95_band_pct":50.0,"tier":"CALIBRATING","prev_band":60.0,"trend":"improving"}}"#,
+        0,
+    );
+    assert!(std::fs::read_to_string(&cal)
+        .unwrap()
+        .contains(r#""samples": 1"#));
+    let _ = std::fs::remove_dir_all(&d);
+}
+
+#[test]
+fn plan_close_no_actual_is_byte_for_byte_legacy() {
+    // No --actual + baseline==current==0 → legacy actual:0, convergence:null (UNCHANGED contract).
+    let d = tmp("planlegacy");
+    let sess = d.join("s.json");
+    let pop = d.join("po.json");
+    let cal = d.join("c.json");
+    let env = [
+        ("I2P_SESSION_FILE", sess.to_str().unwrap()),
+        ("I2P_PLANOPEN_FILE", pop.to_str().unwrap()),
+        ("I2P_CALIBRATION_FILE", cal.to_str().unwrap()),
+    ];
+    std::fs::write(&sess, r#"{"tokens":0}"#).unwrap();
+    line(
+        &["plan-open", "large", "400000"],
+        "",
+        &env,
+        r#"{"opened":"plan:large","est":400000,"baseline_tokens":0}"#,
+        0,
+    );
+    line(
+        &["plan-close"],
+        "",
+        &env,
+        r#"{"class":"plan:large","est":400000,"actual":0,"convergence":null}"#,
+        0,
+    );
+    let _ = std::fs::remove_dir_all(&d);
+}
+
+#[test]
+fn ledger_spend_halts_at_budget() {
+    // Issue #2 Fix 2a: signal-independent per-job cap enforced from local arithmetic.
+    let d = tmp("ledgerspend");
+    let ds = d.to_str().unwrap();
+    line(
+        &[
+            "ledger", "init", ds, "j", "reviewer", "a,b,c", "400000", "15",
+        ],
+        "",
+        &[],
+        &format!("job-ledger: initialised {}/.i2p/jobs/j.json (3 units)", ds),
+        0,
+    );
+    line(
+        &["ledger", "spend", ds, "j", "250000"],
+        "",
+        &[],
+        r#"{"spent":250000,"budget_total":400000,"verdict":"CONTINUE"}"#,
+        0,
+    );
+    line(
+        &["ledger", "spend", ds, "j", "200000"],
+        "",
+        &[],
+        r#"{"spent":450000,"budget_total":400000,"verdict":"HALT"}"#,
+        10,
+    );
+    let _ = std::fs::remove_dir_all(&d);
+}
+
+#[test]
+fn gate_on_no_signal_policy() {
+    // Issue #2 Fix 1b: a blind L1 can be made fail-closed for unattended runs. Default ask unchanged.
+    let d = tmp("gatenosig");
+    let env = [(
+        "I2P_COST_STATE_DIR",
+        d.join("empty").to_str().unwrap().to_string(),
+    )];
+    let env: Vec<(&str, &str)> = env.iter().map(|(k, v)| (*k, v.as_str())).collect();
+    let nosig_ceiling = r#"{"verdict":"NO_SIGNAL","window":"seven_day","used_pct":null,"ceiling":85,"headroom":15,"resets_at":null}"#;
+    line(
+        &["gate", "--on-no-signal", "ask"],
+        "{}",
+        &env,
+        &format!(
+            r#"{{"verdict":"ASK","reason":"no-live-signal","ceiling":{}}}"#,
+            nosig_ceiling
+        ),
+        20,
+    );
+    line(
+        &["gate", "--on-no-signal", "halt"],
+        "{}",
+        &env,
+        &format!(
+            r#"{{"verdict":"HALT","reason":"no-live-signal","ceiling":{}}}"#,
+            nosig_ceiling
+        ),
+        10,
+    );
+    let _ = std::fs::remove_dir_all(&d);
+}
+
+#[test]
+fn doctor_ready_and_breached() {
+    // Issue #2 Fix 1a: pre-fan-out readiness. ready ⇔ session writer present + budget headroom.
+    let d = tmp("doctor");
+    let ok = d.join("ok");
+    std::fs::create_dir_all(&ok).unwrap();
+    std::fs::write(
+        ok.join("session.json"),
+        r#"{"tokens":1000,"billable_tokens":1000}"#,
+    )
+    .unwrap();
+    let env = [("I2P_COST_STATE_DIR", ok.to_str().unwrap())];
+    line(
+        &["doctor"],
+        "",
+        &env,
+        r#"{"ready":true,"session_writer":true,"snapshot_fresh":false,"snapshot_age":-1,"budget_headroom":1999000,"armed":false}"#,
+        0,
+    );
+    // A cache-discounted billable count over the 2M cap → no headroom → not ready (exit 1).
+    let bad = d.join("bad");
+    std::fs::create_dir_all(&bad).unwrap();
+    std::fs::write(
+        bad.join("session.json"),
+        r#"{"tokens":99000000,"billable_tokens":3000000}"#,
+    )
+    .unwrap();
+    let env2 = [("I2P_COST_STATE_DIR", bad.to_str().unwrap())];
+    line(
+        &["doctor"],
+        "",
+        &env2,
+        r#"{"ready":false,"session_writer":true,"snapshot_fresh":false,"snapshot_age":-1,"budget_headroom":0,"armed":false}"#,
+        1,
+    );
+    let _ = std::fs::remove_dir_all(&d);
+}
+
+#[test]
+fn plan_close_empty_actual_errors_not_silent_null() {
+    // Issue #2 review (CORRECTNESS MEDIUM): a present-but-empty --actual must FAIL, not masquerade
+    // as a clean convergence:null close that silently folds no sample.
+    let d = tmp("planemptyactual");
+    let sess = d.join("s.json");
+    let pop = d.join("po.json");
+    let cal = d.join("c.json");
+    let env = [
+        ("I2P_SESSION_FILE", sess.to_str().unwrap()),
+        ("I2P_PLANOPEN_FILE", pop.to_str().unwrap()),
+        ("I2P_CALIBRATION_FILE", cal.to_str().unwrap()),
+    ];
+    std::fs::write(&sess, r#"{"tokens":0}"#).unwrap();
+    line(
+        &["plan-open", "large", "400000"],
+        "",
+        &env,
+        r#"{"opened":"plan:large","est":400000,"baseline_tokens":0}"#,
+        0,
+    );
+    // --actual with no value (or a failed $(…) substitution) → exit 2, no convergence folded.
+    line(
+        &["plan-close", "--actual"],
+        "",
+        &env,
+        r#"{"error":"actual-required","hint":"--actual needs a positive measured token count (e.g. from `tf spend`)"}"#,
+        2,
+    );
+    // plan-open file is left intact so the operator can retry with a real --actual.
+    assert!(pop.exists());
+    let _ = std::fs::remove_dir_all(&d);
+}

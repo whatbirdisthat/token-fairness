@@ -278,7 +278,8 @@ fn kaizen_line(stage: &str, name: &str) -> String {
     )
 }
 
-pub fn plan_close(_argv: &[String]) -> Out {
+pub fn plan_close(argv: &[String]) -> Out {
+    let (flags, _) = parse(argv);
     let popen = planopen_file();
     let pv = match state::read_json(&popen) {
         Some(v) => v,
@@ -295,13 +296,37 @@ pub fn plan_close(_argv: &[String]) -> Out {
         .and_then(|x| x.as_i64())
         .unwrap_or(0);
     let cur = session_tokens();
-    let mut actual = cur - base;
-    if actual < 0 {
-        actual = 0;
-    }
+    // `--actual <n>` feeds an EXTERNALLY-MEASURED actual (Issue #2 P3): the session-token delta
+    // counts only the MAIN transcript, so a fan-out's subagent tokens are invisible (actual:0,
+    // convergence dead). The orchestrator passes the ground truth from `tf spend` (CORE-C, which
+    // reconciles every subagent/workflow transcript). No flag → the legacy session-delta, exact.
+    let actual = match flags.get("actual") {
+        // A present-but-empty/non-numeric `--actual` (shell word-splitting, a failed
+        // `$(tf spend …)` substitution) must NOT masquerade as a clean `convergence:null` close —
+        // that silently folds no sample while looking successful. Fail loud instead.
+        Some(a) => {
+            let n = state::digits_or(a, 0);
+            if n <= 0 {
+                return Out::line(
+                    "{\"error\":\"actual-required\",\"hint\":\"--actual needs a positive measured token count (e.g. from `tf spend`)\"}\n".to_string(),
+                    2,
+                );
+            }
+            n
+        }
+        None => (cur - base).max(0),
+    };
     // §3.4: convergence dies silently if the session-token writer never ran. Warn, don't hide it.
-    if base == 0 && cur == 0 {
+    if base == 0 && cur == 0 && !flags.contains_key("actual") {
         eprintln!("scheduler: plan-close sees baseline==current==0 — the session.json .tokens writer may not be installed; convergence cannot advance.");
+    }
+    // Issue #2 P3: a fan-out leaves actual==0 because subagent tokens never moved session.json.
+    // Point the operator at the measured-actual path rather than silently logging convergence:null.
+    if actual == 0 && pest > 0 {
+        eprintln!(
+            "scheduler: plan-close actual==0 — subagent spend is invisible to session.json. Pass `--actual <measured>` (e.g. from `tf spend`) or run `tf calibrate close plan:{} {} <actual>` to feed convergence.",
+            pclass, pest
+        );
     }
     let mut kaizen = String::new();
     let conv = if pest > 0 && actual > 0 {
@@ -372,6 +397,12 @@ pub fn gate(argv: &[String], payload_in: &str) -> Out {
         .cloned()
         .unwrap_or_else(|| "both".into());
     let require_offpeak = flags.contains_key("require-offpeak");
+    // Issue #2 P1: an unattended/headless run can't honour a soft ASK. `--on-no-signal halt`
+    // (or `defer`) lets such a caller treat a blind L1 as fail-closed. Default `ask` = unchanged.
+    let on_no_signal = flags
+        .get("on-no-signal")
+        .cloned()
+        .unwrap_or_else(|| "ask".into());
     let now = flags.get("now").cloned().unwrap_or_default();
     let start = flags
         .get("start")
@@ -413,13 +444,20 @@ pub fn gate(argv: &[String], payload_in: &str) -> Out {
             )
         }
         20 => {
+            // Policy for a blind L1 (no live signal, no fresh snapshot). Default ASK; `halt`/`defer`
+            // are the fail-closed choices for unattended runs. Every branch still refuses to CONTINUE.
+            let (verdict, code) = match on_no_signal.as_str() {
+                "halt" => ("HALT", 10),
+                "defer" => ("DEFER", 4),
+                _ => ("ASK", 20),
+            };
             return Out::line(
                 format!(
-                    "{{\"verdict\":\"ASK\",\"reason\":\"no-live-signal\",\"ceiling\":{}}}\n",
-                    ceil_json
+                    "{{\"verdict\":\"{}\",\"reason\":\"no-live-signal\",\"ceiling\":{}}}\n",
+                    verdict, ceil_json
                 ),
-                20,
-            )
+                code,
+            );
         }
         _ => {}
     }
@@ -483,4 +521,60 @@ pub fn preflight_fanout(payload: &str) -> Out {
         return Out::ok(serde_json::to_string(&deny).unwrap_or_default() + "\n");
     }
     Out::default()
+}
+
+// ── doctor (pre-fan-out readiness) ───────────────────────────────────────────────────────
+/// `tf doctor [--snapshot-max-age <s>] [--clock <epoch>]` — Issue #2 Fix 1a. A pre-fan-out
+/// readiness probe answering the "is the guard armed?" question at runtime (instead of by hand).
+/// `ready` is the actionable gate: the CORE-A budget cap must have headroom (it is the
+/// signal-independent backstop) and the session-token writer must be installed. A stale/missing
+/// snapshot is reported (L1 will gate blind) but is advisory — the budget cap, not L1, is the guard.
+/// Exit 0 when ready, 1 when not — so a launcher can `tf doctor || halt` before wave 1.
+pub fn doctor(argv: &[String]) -> Out {
+    let (flags, _) = parse(argv);
+    let max_age = state::digits_or(
+        flags
+            .get("snapshot-max-age")
+            .map(|s| s.as_str())
+            .unwrap_or(""),
+        900,
+    );
+    let now = state::digits_or(
+        flags.get("clock").map(|s| s.as_str()).unwrap_or(""),
+        state::now_epoch(),
+    );
+    let dir = state::state_dir();
+
+    // The Stop-hook session.json writer — without it, spend/convergence/cap are all blind.
+    let session_writer = std::path::Path::new(&format!("{}/session.json", dir)).exists();
+
+    // Snapshot freshness (whether L1 can see a recent live window).
+    let (snapshot_fresh, snap_age) = match state::read_json(&snapshot_path()) {
+        Some(v) => {
+            let cap = v.get("captured_at").and_then(|x| x.as_i64()).unwrap_or(0);
+            let age = now - cap;
+            (
+                cap > 0 && age >= 0 && age <= max_age,
+                if cap > 0 { age } else { -1 },
+            )
+        }
+        None => (false, -1),
+    };
+
+    // Budget headroom — the signal-independent cap (reuses `tf budget status`).
+    let bs = crate::budget::dispatch(&["status".to_string()]);
+    let headroom = state::raw_field(bs.stdout.trim_end(), "session_remaining")
+        .parse::<i64>()
+        .unwrap_or(0);
+
+    let armed = std::path::Path::new(&format!("{}/fanout-arm.json", dir)).exists();
+    let ready = session_writer && headroom > 0;
+
+    Out::line(
+        format!(
+            "{{\"ready\":{},\"session_writer\":{},\"snapshot_fresh\":{},\"snapshot_age\":{},\"budget_headroom\":{},\"armed\":{}}}\n",
+            ready, session_writer, snapshot_fresh, snap_age, headroom, armed
+        ),
+        if ready { 0 } else { 1 },
+    )
 }

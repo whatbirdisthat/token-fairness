@@ -33,7 +33,7 @@ never guard on a stale or wrong-metric proxy again.
 |---|---|---|
 | **L0 Pre-flight estimate** | `tf estimate`, `tf calibrate` | Predict cost before fanning out; if confidence is LOW, probe one unit and re-estimate. |
 | **L1 Live ceiling guard** | `tf ceiling-check` (via `tf gate`) | Halt the next wave when a live window reaches `100 − headroom`. Pure, deterministic, **fails closed**. |
-| **L2 Hard budget cap** | Workflow `budget` API (`+Xk`) | A wide fan-out **refuses to run** without an explicit `+Xk` directive; the budget is a physical ceiling. |
+| **L2 Hard budget cap** | `tf budget` (`arm`/`check` + `preflight-spend`); ledger `budget_total` via `tf ledger spend` | A wide fan-out **refuses to run** without an enforceable cap — the **signal-INDEPENDENT** `tf budget arm` (its `+Xk`), NOT the Workflow `budget.*` API (which was null in the Issue #2 incident — see "Empirically verified"). |
 | **L3 Off-peak scheduler** | `tf offpeak-window`, `tf offpeak-budget` | Run unattended in the quiet hours; reserve a morning allowance from the login-time answer. |
 | **L4 Cheap resume** | `tf ledger` | Resume does only what's LEFT — never re-derive context or re-fan the whole job. |
 
@@ -107,16 +107,28 @@ cron that does *not* meet all four conditions may only **alert** (read `checkpoi
 - **No built-in resume primitive** — L4's ledger is ours; anything not captured in `context_pointers`
   is re-derived on resume.
 
-## Needs empirical verification (probe before relying — `tf snapshot` (the hook))
+## Empirically verified (Issue #2, the 987k-token Workflow fan-out probe — 2026-06-13)
 
-The snapshot bridge makes the guard robust regardless, but to know which mechanism is *primary*, run
-`tf verify-payload` as a temporary hook and inspect the dumped payloads:
+A real 30-agent Workflow fan-out (24 was the baseline plan) gave evidence on the four open questions.
+**Caveat: this is ONE run, and the session may not have delivered `.rate_limits` to *any* surface —
+so the findings below inform but do not prove the general case** (the same over-correction the
+Reconciliation section warns against). The findings, and what they mean now:
 
-1. Does a `PreToolUse` (`Agent`/`Task`) hook receive `.rate_limits`? If yes, `tf preflight-fanout` (the hook) can
-   become a hard backstop. If no, the orchestration discipline + snapshot bridge are the guard.
-2. Do subagents receive the live payload? (Assume not — the **orchestrator** is the single guard point.)
-3. Inside a Workflow, is `.rate_limits` readable, or only `budget.*`? (If only `budget.*`, L2 is the
-   in-Workflow guard and L1 governs main-session orchestration.)
-4. Does `.cost.total_cost_usd` update intra-turn?
+1. **Does a `PreToolUse`(`Agent`/`Task`) hook receive `.rate_limits`?** In this run, **no** — the gate
+   was blind (`no-live-signal`) throughout. Whether the hook even *fires* inside a Workflow is the
+   residual unknown (probe with `tf verify-payload`). Either way we don't lean on L1 here → the
+   **CORE-A budget cap** (`tf budget`, signal-INDEPENDENT) is the primary guard; snapshot is best-effort.
+2. **Do subagents receive the live payload / move `session.json`?** **No** — subagent tokens are
+   invisible to the main-session counter. → Convergence must be fed a **measured** actual:
+   `tf plan-close --actual $(tf spend …)` (the session-delta path stays for single-agent work).
+3. **Inside a Workflow, `.rate_limits` or only `budget.*`?** Consistent with **only `budget.*`**, and
+   in the incident it was **null**. → We do **not** rely on the Workflow `budget.*` signal; the guard
+   is the local cap (`tf budget arm` + `preflight-spend`, and `tf ledger spend` for off-peak jobs).
+4. **Does `.cost.total_cost_usd` update intra-turn?** **Still unprobed** — clean follow-up is
+   `tf verify-payload` as a temporary hook.
 
-Every path already fails closed, so nothing proceeds blind while these are unconfirmed.
+Guards added in response (all signal-independent, all fail-closed): an unarmed `Workflow` is DENIED
+(`budget.rs::gate_spend`); `tf doctor` reports readiness before a fan-out; `tf gate --on-no-signal
+halt` lets an unattended run treat a blind L1 as HALT. The cap counts **billable_tokens**
+(cache-reads excluded) so a cheap, count-inflated session doesn't trip it. Every path still fails
+closed — nothing proceeds blind.

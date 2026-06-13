@@ -367,13 +367,20 @@ mod tests {
 
     #[test]
     fn dispatch_reconciles_main_plus_subagent_transcripts() {
+        // Isolate the state dir under the env lock: `untracked_by_session_json` is
+        // `grand_tokens − session.json.tokens`, so the test must NOT read the developer's real
+        // ~/.claude session.json (which holds a live cumulative count). An empty state dir ⇒ sj=0.
+        let _g = crate::testutil::ENV_LOCK.lock().unwrap();
         let proj = fixture_project("SIDA");
+        let state = crate::testutil::temp_dir("spend-state");
+        std::env::set_var("I2P_COST_STATE_DIR", &state);
         let out = dispatch(&[
             "--project-dir".into(),
             proj.to_string_lossy().into_owned(),
             "--session".into(),
             "SIDA".into(),
         ]);
+        std::env::remove_var("I2P_COST_STATE_DIR");
         assert_eq!(out.code, 0);
         // Two transcripts discovered (main + subagent), both models present.
         assert!(out.stdout.contains("\"transcripts\":2"));
@@ -381,9 +388,10 @@ mod tests {
         assert!(out.stdout.contains("claude-haiku-4-5"));
         // opus 1,000,000 + haiku 1,500 = 1,001,500 total tokens.
         assert!(out.stdout.contains("\"total_tokens\":1001500"));
-        // session.json is absent here ⇒ everything is "untracked" (the gap tf spend surfaces).
+        // session.json is absent (sj=0) ⇒ everything is "untracked" (the gap tf spend surfaces).
         assert!(out.stdout.contains("\"untracked_by_session_json\":1001500"));
         std::fs::remove_dir_all(&proj).ok();
+        std::fs::remove_dir_all(&state).ok();
     }
 
     #[test]
