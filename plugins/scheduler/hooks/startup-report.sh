@@ -22,6 +22,10 @@ cwd=""
 [ -n "$payload" ] && cwd="$(printf '%s' "$payload" | jq -r '.cwd // empty' 2>/dev/null)"
 [ -n "$cwd" ] || cwd="$(pwd 2>/dev/null || echo .)"
 
+# (The stale-session.json spend reset now lives in the `tf session-boundary` SessionStart hook —
+# it zeroes session.json on a session_id change so the preflight-spend gate doesn't read a prior
+# heavy session's total as current spend. See plugins/scheduler/hooks/hooks.json.)
+
 # Fresh session ⇒ no in-session cron is live yet. Reset ephemeral arming so the report is truthful.
 "$TF" registry reset-armed "$cwd" >/dev/null 2>&1 || true
 

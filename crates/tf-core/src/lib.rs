@@ -23,6 +23,7 @@ pub mod signal;
 pub mod snapshot;
 pub mod spend;
 pub mod state;
+pub mod windows;
 
 /// Test-only support shared across modules. The `tf` modules resolve state paths from process
 /// environment variables (`I2P_*`); a process-global `Mutex` serializes the tests that override

@@ -25,6 +25,10 @@
         "hooks": [
           {
             "type": "command",
+            "command": "bash ${CLAUDE_PLUGIN_ROOT}/hooks/tf-hook.sh session-boundary >/dev/null 2>&1 || true"
+          },
+          {
+            "type": "command",
             "command": "bash ${CLAUDE_PLUGIN_ROOT}/hooks/tf-hook.sh snapshot 2>/dev/null || true"
           },
           {

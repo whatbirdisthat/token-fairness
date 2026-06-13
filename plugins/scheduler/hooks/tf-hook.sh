@@ -40,7 +40,7 @@ sha256_of() {
   fi
 }
 if [ -n "$ver" ] && command -v curl >/dev/null 2>&1; then
-  base="https://github.com/whatbirdisthat/token-fairness/releases/download/v${ver}"
+  base="https://github.com/agentic-underground/token-fairness/releases/download/v${ver}"
   mkdir -p "$cache" 2>/dev/null || true
   tmp="${cbin}.tmp.$$"
   if curl -fsSL "${base}/${name}" -o "$tmp" 2>/dev/null; then

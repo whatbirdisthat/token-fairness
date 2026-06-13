@@ -6,7 +6,7 @@ resolver = "2"
 version = "0.1.1"
 edition = "2021"
 license = "MIT OR Apache-2.0"
-repository = "https://github.com/whatbirdisthat/token-fairness"
+repository = "https://github.com/agentic-underground/token-fairness"
 
 # A scheduler that runs on hot hooks wants the smallest, fastest binary we can ship.
 [profile.release]

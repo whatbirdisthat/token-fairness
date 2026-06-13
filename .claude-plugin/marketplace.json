@@ -20,10 +20,10 @@
       "author": {
         "name": "whatbirdisthat",
         "email": "95787+whatbirdisthat@users.noreply.github.com",
-        "url": "https://github.com/whatbirdisthat"
+        "url": "https://github.com/agentic-underground"
       },
-      "homepage": "https://github.com/whatbirdisthat/token-fairness/tree/master/plugins/scheduler",
-      "repository": "https://github.com/whatbirdisthat/token-fairness",
+      "homepage": "https://github.com/agentic-underground/token-fairness/tree/master/plugins/scheduler",
+      "repository": "https://github.com/agentic-underground/token-fairness",
       "license": "MIT OR Apache-2.0",
       "category": "workflow",
       "keywords": [

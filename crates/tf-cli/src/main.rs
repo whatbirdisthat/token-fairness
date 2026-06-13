@@ -162,9 +162,21 @@ fn main() {
         "route" => routing::route(rest),
         "budget" => budget::dispatch(rest),
         "preflight-spend" => budget::preflight_spend(&read_stdin()),
+        "session-boundary" => budget::session_boundary(&read_stdin()),
         "spend" => spend::dispatch(rest),
         "observe" => observe::dispatch(rest),
         "" => Out::err("usage: tf <command> [args]", 2),
+        "--help" | "-h" | "help" => Out::ok(
+            "usage: tf <command> [args]\n\n\
+             Core:      budget  gate  plan  plan-open  plan-close  doctor  snapshot  session-boundary\n\
+             Reporting: report  spend  signal  verify-payload  observe\n\
+             Fanout:    preflight  preflight-spend  preflight-fanout  estimate\n\
+             Estimator: calibrate  estimator  route\n\
+             Offpeak:   offpeak-window  offpeak-budget  run-offpeak\n\
+             Durable:   ledger  registry  oscron\n\n\
+             Run `tf <command>` with no args for per-command usage.\n"
+                .to_string(),
+        ),
         other => Out::err(format!("tf: unknown command '{}'", other), 2),
     };
     emit(out);

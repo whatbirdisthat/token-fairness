@@ -48,8 +48,21 @@ honest guarantee is that every such choice is *visible* in `tf spend`, never hid
 Until all three land and pass the red-team: **no `Workflow`, no multi-Agent fan-out** — single-threaded local
 work only. The freeze becomes self-enforcing the moment CORE-B exists.
 
-- **CORE-A — Self-tracked budget + `budget.total` discipline.** A user-set session/job token cap; every
+- **CORE-A — Window-aware budget + `budget.total` discipline.** A user-set per-window token cap; every
   sanctioned fan-out launches *through a wrapper* that always sets `budget.total` from `tf ledger remaining`.
+  The gate is anchored to the provider's two **rolling windows** — `five_hour` (session) and `seven_day`
+  (weekly "all-models") — not a single cumulative total that only reset on a manual `--reset`. That old
+  cumulative cap climbed across many windows and FALSELY locked out a fan-out even when the live 5-hour
+  window had reset to ~0% (plenty of allocation). Now: when a **fresh** `ratelimit-snapshot.json` is
+  available, the live `used_percentage` is the source of truth (below `100 − headroom` → unlock; at/over →
+  fail closed). When **blind**, a per-window token cap whose baseline **auto-rebaselines on every observed
+  window reset** preserves lockout protection without a manual reset. Per-window token quotas are inferred
+  empirically by the snapshot hook (EWMA over `Δtokens / (Δused% / 100)`), so `tf budget status` can report
+  the tokens remaining in each window. Pure core in `windows.rs` (`decide`/`rebaseline`/`update_quota`/
+  `remaining`); the snapshot hook (`snapshot.rs`) maintains `windows.json`; `budget.rs` reads + decides.
+  *Caveat:* `used_percentage` is account-wide while `session.json.billable_tokens` is this session only, so a
+  single-session quota is biased low under concurrent usage — the `MIN_SAMPLES` confidence gate + cold-start
+  allows ensure that never causes a false denial (it only ever adds a refusal once confident the est won't fit).
 - **CORE-B — Blocking `PreToolUse(Workflow|Agent|Task)` hook.** Deliberately NOT fail-soft: denies fan-outs
   with no budget evidence or past the cap. **Verify the harness supports the `Workflow` matcher FIRST**; if
   not, the INV-1 residual path applies and we file the gap upstream.
@@ -62,8 +75,10 @@ work only. The freeze becomes self-enforcing the moment CORE-B exists.
   **opus final-compile (one call, on distilled claims)**; carries `+Xk`; bounds the verify fan-out by
   `budget.remaining()`; `log`s dropped work; emits the spend banner. Per-stage routing baked in as the
   DEFAULT — kills the run-1 root cause (agents inheriting the session model).
-- **P-F — Make the gate "see" when it can** (optional): wire the rate-limit snapshot IF the harness exposes
-  the payload; else say so loudly. The CORE does not depend on this.
+- **P-F — Make the gate "see" when it can** (DONE for CORE-A): the budget gate now reads the freshness-stamped
+  `ratelimit-snapshot.json` (written by the snapshot hook on SessionStart/PostToolUse/Stop) and treats the live
+  `used_percentage` as the source of truth, falling back to the auto-rebaselining per-window cap only when the
+  snapshot is stale/absent. The CORE still does not *depend* on a live signal — blind is safe (fails closed).
 - **P-G — Model-Routing Doctrine doc** (`doc/policy/model-routing-doctrine.md`) + reflect in
   `knowledge/cognition-routing.md`.
 - **P-H — Ethos** (`doc/ETHOS.md` + SessionStart line + SOUL): the *why* — protect the solo operator's limits

@@ -41,6 +41,11 @@ pub fn dispatch(payload: &str) -> Out {
         &(serde_json::to_string(&snap).unwrap_or_default() + "\n"),
     );
 
+    // Window-aware budget (CORE-A unlock half): fold this fresh live reading into windows.json —
+    // rebaseline each window on reset and refine its inferred token quota. This is the writer; the
+    // `tf preflight-spend` gate is the reader. Uses the same billable-token basis as the cap.
+    crate::windows::maintain(&v, crate::budget::session_tokens());
+
     // Forward-compat self-update of the standing verdict: this event proved it delivers .rate_limits.
     let evt = v
         .get("hook_event_name")
