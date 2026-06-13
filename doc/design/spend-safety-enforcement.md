@@ -93,15 +93,20 @@ work only. The freeze becomes self-enforcing the moment CORE-B exists.
     HON-1)**, per-period table (saves/blown/procedural/allows/est-guarded), denies-by-reason
     histogram, and Mermaid (`pie` decision-mix + `xychart-beta` SAVES-vs-BLOWN trend). `--write`
     regenerates `<dir>/honesty.md` idempotently. No-arg `tf observe` keeps its JSON tally (back-compat).
-  - `observe::log_blown(reason)` added so the BLOWN side of the headline is wireable (its trigger —
-    a detected lockout/window-exhaustion — is still to be wired into the ceiling/spend path).
-  - **Deferred (needs a capture extension):** spend-by-model × period and estimate-vs-actual (MAPE)
-    over time. Per-event `model`/`tokens`/`cost` are not yet recorded, so the renderer **declares
-    that section as pending rather than fabricate it** (the same HON-1 rule that forbids hiding
-    BLOWNs forbids inventing spend). Lands when a session-end hook appends a `spend` event; per-session
-    spend is available now via `tf spend`, estimator accuracy via `tf report --estimator`.
-  - Pure fold/render functions are frozen-vector unit-tested; dispatch IO follows the project
-    convention (covered by the e2e bash gates, like `spend.rs`).
+  - **BLOWN wired:** `observe::log_blown(reason)` now fires from `snapshot::dispatch` when a live
+    rate-limit window reads ≥100% (a genuine lockout the guard failed to prevent), deduped by the
+    window's `resets_at` so one episode logs exactly one BLOWN.
+  - **Spend-by-model × period + MAPE now land** (capture extension shipped):
+    - `tf spend --capture` appends a `kind:"spend"` event (per-model tokens+cost) to the honesty
+      log; wired into the **Stop hook**. Because Stop re-emits *cumulative* spend every turn, the
+      renderer dedups to the **latest reading per session** before bucketing — never double-counts.
+    - MAPE-over-time is folded from the existing **estimator-accuracy ledger** (`{at,est,actual}`):
+      per-period mean APE = `mean(|est−actual|/actual)`. New pure `fold_accuracy`.
+    - The report renders a spend-by-model × period table, a MAPE-over-time table, and a model-cost
+      `pie` — each showing an honest "no data yet" line when empty.
+  - Pure fold/render functions (`fold_events`, `fold_accuracy`, `render_markdown`) are frozen-vector
+    unit-tested; dispatch/capture IO follows the project convention (covered by the e2e bash gates,
+    like `spend.rs`).
 
 ## Red-team acceptance — how we PROVE it
 `tests/red-team-spend.sh` actively tries to violate each invariant and MUST be blocked/flagged:

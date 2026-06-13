@@ -12,12 +12,13 @@
 //!     The headline is the **#SAVES vs #BLOWN** efficacy ratio, rendered with equal prominence
 //!     (HON-1). The pure fold (`fold_events`) is exhaustively unit-tested; dispatch does the IO.
 //!
-//! NOTE on data not yet captured: per-event `model`/`tokens`/`cost` are not yet recorded, so the
-//! spec's spend-by-model × period and MAPE-over-time tables await a capture extension (a `spend`
-//! event kind appended at session end). Until then those sections declare the gap rather than fake
-//! it — the same honesty rule (HON-1) that forbids hiding BLOWNs forbids inventing spend.
+//! Event kinds in the log: `gate` (a guard decision — save/procedural-deny/allow), `blown` (a
+//! lockout hit anyway — wired from `snapshot` at ≥100%), and `spend` (per-model tokens+cost,
+//! emitted by `tf spend --capture` from the Stop hook). The rollup also folds the estimator-accuracy
+//! ledger for MAPE-over-time. Spend events are cumulative-per-turn, so the fold keeps only the
+//! LATEST reading per session before bucketing — it never double-counts.
 
-use crate::{state, Out};
+use crate::{fmt, state, Out};
 use serde_json::Value;
 use std::collections::BTreeMap;
 
@@ -84,6 +85,27 @@ pub fn log_blown(reason: &str) {
         "kind": "blown",
         "class": "blown",
         "reason": reason,
+    });
+    let _ = state::append_line(&events_path(), &ev.to_string());
+}
+
+/// Append a **spend** event — the per-model token+cost reading for `session`. Emitted by
+/// `tf spend --capture` from the Stop hook; the renderer keeps only the LATEST per session (the
+/// hook re-emits cumulative spend every turn). Best-effort, metadata only — no prompt content.
+pub fn log_spend(session: &str, by_model: &[(String, i64, f64)]) {
+    let models: Vec<Value> = by_model
+        .iter()
+        .map(|(m, t, c)| serde_json::json!({"model": m, "tokens": t, "cost_usd": c}))
+        .collect();
+    let total_tokens: i64 = by_model.iter().map(|(_, t, _)| t).sum();
+    let total_cost: f64 = by_model.iter().map(|(_, _, c)| c).sum();
+    let ev = serde_json::json!({
+        "ts": state::now_epoch(),
+        "session": session,
+        "kind": "spend",
+        "by_model": models,
+        "total_tokens": total_tokens,
+        "total_cost_usd": total_cost,
     });
     let _ = state::append_line(&events_path(), &ev.to_string());
 }
@@ -165,12 +187,22 @@ pub struct Bucket {
     pub est_n: i64,
 }
 
-/// A complete rollup: per-period buckets (time-ordered), a deny-reason histogram, and a
-/// decision-class mix for the pie. Pure — built only from event lines.
+/// (tokens, cost_usd) — one model's spend within a period.
+pub type ModelTotal = (i64, f64);
+/// model → its spend, within one period.
+pub type ModelSpend = BTreeMap<String, ModelTotal>;
+
+/// A complete rollup: per-period buckets (time-ordered), a deny-reason histogram, the
+/// per-period spend-by-model join, and the per-period MAPE. Pure — built only from log lines.
 #[derive(Default, Clone, Debug, PartialEq)]
 pub struct Rollup {
     pub buckets: BTreeMap<String, Bucket>,
     pub by_reason: BTreeMap<String, i64>, // denies (save + procedural) keyed by reason
+    /// period → model → (tokens, cost_usd). From `spend` events, deduped to the LATEST cumulative
+    /// reading per session (the Stop hook re-emits cumulative spend every turn — only the last counts).
+    pub spend: BTreeMap<String, ModelSpend>,
+    /// period → (sum of per-sample APE, n). From the estimator-accuracy ledger. mean = sum/n.
+    pub mape: BTreeMap<String, (f64, i64)>,
     pub other: i64,
 }
 impl Rollup {
@@ -192,16 +224,20 @@ impl Rollup {
 /// Mirrors the `spend::aggregate` pure-fold pattern — dispatch supplies the IO.
 pub fn fold_events<'a, I: IntoIterator<Item = &'a str>>(lines: I, period: Period) -> Rollup {
     let mut r = Rollup::default();
+    // session → (latest ts, that reading's per-model spend). The Stop hook re-emits cumulative
+    // spend every turn, so only the LAST event per session is the true session total.
+    type LatestSpend = BTreeMap<String, (i64, Vec<(String, i64, f64)>)>;
+    let mut spend_latest: LatestSpend = BTreeMap::new();
+
     for line in lines {
         let Ok(v) = serde_json::from_str::<Value>(line) else {
             continue;
         };
         let ts = state::int(&v, "ts", 0);
-        let key = period_key(ts, period);
-        let b = r.buckets.entry(key).or_default();
         let reason = v.get("reason").and_then(|x| x.as_str()).unwrap_or("");
         match v.get("kind").and_then(|x| x.as_str()) {
             Some("gate") => {
+                let b = r.buckets.entry(period_key(ts, period)).or_default();
                 let est = state::int(&v, "est", 0);
                 match v.get("class").and_then(|x| x.as_str()) {
                     Some("save") => {
@@ -222,11 +258,74 @@ pub fn fold_events<'a, I: IntoIterator<Item = &'a str>>(lines: I, period: Period
                     _ => r.other += 1,
                 }
             }
-            Some("blown") => b.blown += 1,
+            Some("blown") => {
+                r.buckets.entry(period_key(ts, period)).or_default().blown += 1;
+            }
+            Some("spend") => {
+                let session = v.get("session").and_then(|x| x.as_str()).unwrap_or("");
+                let models: Vec<(String, i64, f64)> = v
+                    .get("by_model")
+                    .and_then(|x| x.as_array())
+                    .map(|a| {
+                        a.iter()
+                            .map(|m| {
+                                (
+                                    m.get("model")
+                                        .and_then(|x| x.as_str())
+                                        .unwrap_or("unknown")
+                                        .to_string(),
+                                    state::int(m, "tokens", 0),
+                                    state::num(m, "cost_usd", 0.0),
+                                )
+                            })
+                            .collect()
+                    })
+                    .unwrap_or_default();
+                let e = spend_latest
+                    .entry(session.to_string())
+                    .or_insert((-1, vec![]));
+                if ts >= e.0 {
+                    *e = (ts, models);
+                }
+            }
             _ => r.other += 1,
         }
     }
+
+    // Finalize spend: bucket each session's LATEST reading into its period.
+    for (_session, (ts, models)) in spend_latest {
+        let pm = r.spend.entry(period_key(ts, period)).or_default();
+        for (m, t, c) in models {
+            let e = pm.entry(m).or_insert((0, 0.0));
+            e.0 += t;
+            e.1 += c;
+        }
+    }
     r
+}
+
+/// PURE: fold estimator-accuracy ledger lines (`{at, est, actual, …}`) into per-period MAPE on an
+/// existing rollup. The per-sample APE is `|est-actual|/actual`; the period mean is the MAPE.
+pub fn fold_accuracy<'a, I: IntoIterator<Item = &'a str>>(
+    r: &mut Rollup,
+    lines: I,
+    period: Period,
+) {
+    for line in lines {
+        let Ok(v) = serde_json::from_str::<Value>(line) else {
+            continue;
+        };
+        let at = state::int(&v, "at", 0);
+        let actual = state::num(&v, "actual", 0.0);
+        if actual == 0.0 {
+            continue; // APE undefined against a zero actual — skip, never divide by zero.
+        }
+        let est = state::num(&v, "est", 0.0);
+        let ape = (est - actual).abs() / actual;
+        let e = r.mape.entry(period_key(at, period)).or_insert((0.0, 0));
+        e.0 += ape;
+        e.1 += 1;
+    }
 }
 
 /// The headline efficacy ratio, honestly rendered. "n/a" when there is nothing to weigh.
@@ -288,17 +387,56 @@ pub fn render_markdown(r: &Rollup, period: Period) -> String {
         s.push('\n');
     }
 
-    // Mermaid: decision mix (pie) + SAVES-vs-BLOWN trend (xychart-beta).
-    s.push_str(&render_mermaid(r, &t));
+    // Spend by model × period (from `spend` events).
+    s.push_str("## Spend by model × period\n\n");
+    if r.spend.is_empty() {
+        s.push_str(
+            "_No spend captured yet._ A session-end Stop hook appends a `spend` event \
+             (`tf spend --capture`); per-session spend is also available live via `tf spend`.\n\n",
+        );
+    } else {
+        s.push_str("| Period | Model | Tokens | Cost (USD) |\n|---|---|---:|---:|\n");
+        for (period_k, models) in &r.spend {
+            for (model, (tok, cost)) in models {
+                s.push_str(&format!(
+                    "| {} | {} | {} | {} |\n",
+                    period_k,
+                    model,
+                    tok,
+                    fmt::fixed(*cost, 4)
+                ));
+            }
+        }
+        s.push('\n');
+    }
 
-    // Honest declaration of the not-yet-captured sections.
-    s.push_str(
-        "\n## Spend by model · MAPE over time\n\n_Pending a capture extension._ Per-event \
-         `model`/`tokens`/`cost` are not yet written to the event log, so cross-time spend-by-model \
-         and estimate-vs-actual (MAPE) cannot be rendered honestly here yet. They land when a \
-         session-end hook appends a `spend` event (design §P-I). Per-session spend is available now \
-         via `tf spend`; estimator accuracy via `tf report --estimator`.\n",
-    );
+    // MAPE over time (estimate-vs-actual accuracy, from the estimator-accuracy ledger).
+    s.push_str("## Estimate-vs-actual accuracy (MAPE) over time\n\n");
+    if r.mape.is_empty() {
+        s.push_str(
+            "_No accuracy samples yet._ Each closed plan (`tf plan-close`) adds one; \
+             see also `tf report --estimator`.\n\n",
+        );
+    } else {
+        s.push_str("| Period | MAPE | Samples |\n|---|---:|---:|\n");
+        for (period_k, (sum_ape, n)) in &r.mape {
+            let mape_pct = if *n > 0 {
+                sum_ape / *n as f64 * 100.0
+            } else {
+                0.0
+            };
+            s.push_str(&format!(
+                "| {} | {}% | {} |\n",
+                period_k,
+                fmt::fixed(mape_pct, 2),
+                n
+            ));
+        }
+        s.push('\n');
+    }
+
+    // Mermaid: decision mix + model-cost mix (pies) + SAVES-vs-BLOWN trend (xychart-beta).
+    s.push_str(&render_mermaid(r, &t));
     s
 }
 
@@ -316,6 +454,25 @@ fn render_mermaid(r: &Rollup, t: &Bucket) -> String {
         for (name, n) in slices {
             if n > 0 {
                 s.push_str(&format!("    \"{}\" : {}\n", name, n));
+            }
+        }
+        s.push_str("```\n\n");
+    }
+    // Model-cost-mix pie — total USD per model across all periods (cents, so the slices are
+    // integers Mermaid renders cleanly; an all-zero/empty mix is skipped).
+    let mut model_cents: BTreeMap<String, i64> = BTreeMap::new();
+    for models in r.spend.values() {
+        for (m, (_t, c)) in models {
+            *model_cents.entry(m.clone()).or_insert(0) += fmt::round_i64(c * 100.0);
+        }
+    }
+    if model_cents.values().any(|c| *c > 0) {
+        s.push_str(
+            "## Spend mix by model (US¢)\n\n```mermaid\npie title Spend by model (US cents)\n",
+        );
+        for (m, cents) in &model_cents {
+            if *cents > 0 {
+                s.push_str(&format!("    \"{}\" : {}\n", m, cents));
             }
         }
         s.push_str("```\n\n");
@@ -367,10 +524,19 @@ fn tally(body: &str) -> String {
     )
 }
 
+/// Build the full rollup for a period from BOTH on-disk sources: the honesty event log and the
+/// estimator-accuracy ledger (for the MAPE-over-time join). The single IO entry point.
+fn build_rollup(period: Period) -> Rollup {
+    let events = std::fs::read_to_string(events_path()).unwrap_or_default();
+    let mut r = fold_events(events.lines(), period);
+    let accuracy = std::fs::read_to_string(state::accuracy_ledger()).unwrap_or_default();
+    fold_accuracy(&mut r, accuracy.lines(), period);
+    r
+}
+
 /// `tf report --honesty` entry — render the markdown rollup for `period` to a string.
 pub fn report(period: Period) -> String {
-    let body = std::fs::read_to_string(events_path()).unwrap_or_default();
-    render_markdown(&fold_events(body.lines(), period), period)
+    render_markdown(&build_rollup(period), period)
 }
 
 /// `tf observe [--period day|week|month] [--write <dir>]`.
@@ -401,15 +567,14 @@ pub fn dispatch(argv: &[String]) -> Out {
         }
     }
 
-    let body = std::fs::read_to_string(events_path()).unwrap_or_default();
-
     // Back-compat: no rollup flags ⇒ the original JSON tally.
     if period.is_none() && write_dir.is_none() {
+        let body = std::fs::read_to_string(events_path()).unwrap_or_default();
         return Out::ok(tally(&body));
     }
 
     let period = period.unwrap_or(Period::Month);
-    let md = render_markdown(&fold_events(body.lines(), period), period);
+    let md = render_markdown(&build_rollup(period), period);
 
     if let Some(dir) = write_dir {
         let path = format!("{}/honesty.md", dir.trim_end_matches('/'));
@@ -521,11 +686,65 @@ mod tests {
         // HON-1: both counts present in the headline, BLOWN never hidden.
         assert!(md.contains("1 SAVE"));
         assert!(md.contains("1 BLOWN"));
-        // The not-yet-captured spend section is declared, not faked.
-        assert!(md.contains("Pending a capture extension"));
+        // The spend/MAPE sections render their honest "no data yet" state (not a fabricated table).
+        assert!(md.contains("## Spend by model × period"));
+        assert!(md.contains("No spend captured yet"));
+        assert!(md.contains("(MAPE) over time"));
         // Mermaid surfaces render.
         assert!(md.contains("```mermaid"));
         assert!(md.contains("xychart-beta"));
+    }
+
+    #[test]
+    fn spend_events_dedup_to_latest_per_session_then_bucket() {
+        let day = 20_616 * 86_400;
+        // Same session re-emits cumulative spend across two turns; only the LAST (1500 tok) counts.
+        let lines = [
+            format!(
+                r#"{{"ts":{},"session":"S1","kind":"spend","by_model":[{{"model":"claude-opus-4-8","tokens":1000,"cost_usd":0.50}}]}}"#,
+                day
+            ),
+            format!(
+                r#"{{"ts":{},"session":"S1","kind":"spend","by_model":[{{"model":"claude-opus-4-8","tokens":1500,"cost_usd":0.75}}]}}"#,
+                day + 60
+            ),
+            // A different session in the same period adds its own reading.
+            format!(
+                r#"{{"ts":{},"session":"S2","kind":"spend","by_model":[{{"model":"claude-haiku-4-5","tokens":400,"cost_usd":0.01}}]}}"#,
+                day + 120
+            ),
+        ];
+        let refs: Vec<&str> = lines.iter().map(|s| s.as_str()).collect();
+        let r = fold_events(refs, Period::Day);
+        let pm = r.spend.get("2026-06-12").expect("a spend bucket");
+        // opus deduped to the latest cumulative reading (1500, not 1000+1500).
+        assert_eq!(pm.get("claude-opus-4-8"), Some(&(1500, 0.75)));
+        assert_eq!(pm.get("claude-haiku-4-5"), Some(&(400, 0.01)));
+        // Spend events do NOT create empty efficacy buckets.
+        assert!(r.buckets.is_empty());
+        // Rendered report carries a real spend table now.
+        let md = render_markdown(&r, Period::Day);
+        assert!(md.contains("| 2026-06-12 | claude-opus-4-8 | 1500 |"));
+        assert!(md.contains("Spend by model (US cents)")); // model-mix pie
+    }
+
+    #[test]
+    fn accuracy_folds_into_per_period_mape() {
+        let day = 20_616 * 86_400;
+        let lines = [
+            // est 20000 vs actual 20000 → APE 0 ; est 20000 vs 10000 → APE 1.0 ; mean = 50%.
+            format!(r#"{{"at":{},"est":20000,"actual":20000}}"#, day),
+            format!(r#"{{"at":{},"est":20000,"actual":10000}}"#, day + 60),
+            // actual 0 ⇒ skipped (never divide by zero).
+            format!(r#"{{"at":{},"est":5000,"actual":0}}"#, day + 120),
+        ];
+        let mut r = Rollup::default();
+        fold_accuracy(&mut r, lines.iter().map(|s| s.as_str()), Period::Day);
+        let (sum_ape, n) = r.mape.get("2026-06-12").copied().expect("a mape bucket");
+        assert_eq!(n, 2);
+        assert!((sum_ape / n as f64 - 0.5).abs() < 1e-9);
+        let md = render_markdown(&r, Period::Day);
+        assert!(md.contains("| 2026-06-12 | 50.00% | 2 |"));
     }
 
     #[test]

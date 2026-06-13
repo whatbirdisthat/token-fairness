@@ -204,6 +204,9 @@ pub fn dispatch(argv: &[String]) -> Out {
         None
     };
 
+    // `--capture` ALSO appends a `spend` event to the honesty log (P-I), for the cross-time
+    // spend-by-model rollup. Wired into the Stop hook; the renderer dedups to the latest per session.
+    let capture = argv.iter().any(|a| a == "--capture");
     let sid = flag("session").unwrap_or_else(session_id);
     let proj = flag("project-dir")
         .map(PathBuf::from)
@@ -249,6 +252,15 @@ pub fn dispatch(argv: &[String]) -> Out {
     let grand_cost: f64 = totals.values().map(|t| t.cost).sum();
     let sj = session_json_tokens();
     let untracked = grand_tokens - sj; // >0 ⇒ spend session.json missed (subagent/workflow fan-out)
+
+    // P-I capture: append this session's per-model reading to the honesty log.
+    if capture {
+        let by_model: Vec<(String, i64, f64)> = totals
+            .iter()
+            .map(|(m, t)| (m.clone(), t.tokens(), t.cost))
+            .collect();
+        crate::observe::log_spend(&sid, &by_model);
+    }
 
     // Per-model JSON array, sorted by model id (BTreeMap order).
     let by_model = totals

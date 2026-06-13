@@ -68,6 +68,33 @@ pub fn dispatch(payload: &str) -> Out {
         .entry(evt)
         .or_insert_with(|| json!({ "fires": 0, "with_rate_limits": 0 }));
     entry["present"] = json!(true);
+
+    // BLOWN detection (P-I, HON-1): a window AT/OVER 100% is a genuine lockout — the guard FAILED
+    // to prevent it. Honesty demands we record it as loudly as a SAVE. Dedup by the window's
+    // resets_at so one lockout EPISODE logs exactly one BLOWN, not one per hook fire.
+    let blown = ["five_hour", "seven_day"].iter().find_map(|w| {
+        match v
+            .pointer(&format!("/rate_limits/{}/used_percentage", w))
+            .and_then(|x| x.as_f64())
+        {
+            Some(p) if p >= 100.0 => {
+                let reset = v
+                    .pointer(&format!("/rate_limits/{}/resets_at", w))
+                    .map(|x| x.to_string())
+                    .unwrap_or_default();
+                Some((*w, reset))
+            }
+            _ => None,
+        }
+    });
+    if let Some((w, reset)) = blown {
+        let marker = format!("{}@{}", w, reset);
+        if findings.get("last_blown").and_then(|x| x.as_str()) != Some(marker.as_str()) {
+            crate::observe::log_blown(&format!("rate-limit {} window exhausted (100%)", w));
+            findings["last_blown"] = json!(marker);
+        }
+    }
+
     let _ = state::write_atomic(
         &findings_path,
         &(serde_json::to_string(&findings).unwrap_or_default() + "\n"),
