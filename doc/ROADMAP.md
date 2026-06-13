@@ -19,47 +19,48 @@ Each entry is self-contained and can be acted upon by an AI agent or developer w
 ---
 
 ## [1] MCP Server, Telemetry Pipeline & Dashboard
-> STATUS: IN PROGRESS (Phase A COMPLETE; Phase C dashboard backend COMPLETE & serving; Phase B MCP is a STUB FACADE — see Honest Status; dashboard frontend renders blank)
+> STATUS: IN PROGRESS (Phase A COMPLETE; Phase B + C reworked from stub facade to real — all C/H/M defects fixed; remaining gap: WebSocket /ws route not yet wired, AC#6)
 > ADDED: 2026-06-13
-> LAST UPDATED: 2026-06-13
+> LAST UPDATED: 2026-06-14
 > PRIORITY: HIGH
 
-> ⚠️ **HONEST STATUS (corrected 2026-06-13 after adversarial review).** This item was
-> previously marked COMPLETE. That was false. An Opus CORRECTNESS-REVIEWER audit found the
-> entire Phase B MCP layer is a **stub facade**: every tool handler validates input then
-> returns a hardcoded success/zero/empty value without calling the real domain logic. The
-> test suite stayed green only because it asserts response *shape*, never behaviour. Phase C
-> (dashboard) backend is genuinely implemented and now serves over HTTP with correct MIME
-> types, but the embedded HTML only `console.log`s data — the three `<canvas>` charts never
-> render, so the page is effectively blank. Outstanding defects below MUST be fixed before
-> this item is COMPLETE.
+> ⚠️ **HONEST STATUS (corrected 2026-06-13; reworked 2026-06-14).** This item was once
+> falsely marked COMPLETE while the Phase B MCP layer was a **stub facade** (every handler
+> returned hardcoded values; tests asserted only response shape) and the dashboard rendered a
+> blank page. An Opus CORRECTNESS-REVIEWER audit caught it; the defects below have since been
+> fixed and verified. The ONE remaining gap to COMPLETE is the live WebSocket stream (AC#6).
 >
-> **CRITICAL (product safety):**
-> - C1 — `tf_gate` (mcp.rs) never calls `scheduler::gate()`; it computes a bogus
->   `used_pct + headroom > 100` with inverted logic (more safety margin → deny). The
->   agent-facing spend guard returns a fabricated verdict.
-> - C2 — `tf_spend` claims to record a spend event but writes nothing; success is faked, so
->   MCP-recorded spend is silently dropped and the budget under-counts.
+> **CRITICAL — FIXED 2026-06-14:**
+> - ✅ C1 — `tf_gate` now delegates to the real `scheduler::gate()` and maps the verdict via
+>   `map_verdict`; produces the same verdict as CLI `tf gate`.
+> - ✅ C2 — `tf_spend` now appends a real spend event via `state::append_line(observe::events_path(), …)`.
 >
-> **HIGH (incomplete/misleading):**
-> - H1 — `tf_budget_read` hardcodes `current_spend`/`fanout_spend` to 0.
-> - H2 — `tf_report` returns a fixed 24h window + zero totals regardless of requested period.
-> - H3 — `tf_observe` always returns `[]`.
-> - H4 — `tf_signal`, `tf_plan_open`, `tf_plan_close`, `tf_schedule_toggle` return success
->   without persisting anything.
-> - H5 — Resources `tf://status`, `tf://calibration`, `tf://events` serve hardcoded/empty
->   state (status reports all signals "OK" unconditionally — masks a real ERROR).
-> - H6 — Server does not use `rmcp` (hand-rolled stdin loop); no `initialize`/`tools/list`
->   handshake, so a real MCP client likely can't enumerate tools. The unused `rmcp`/`tokio`
->   deps still ship under `--features mcp`, defeating the binary-size intent.
-> - H7 — Dashboard reads budget keys `session_cap`/`per_fanout_cap`; on-disk keys are
->   `session_cap_tokens`/`per_fanout_cap_tokens`, so it always shows the default cap and the
->   ceiling % is computed against the wrong denominator. *(Fixed as part of the rework.)*
-> - DASH-FRONTEND — `DASHBOARD_HTML` embeds placeholder JS that only logs to console; no
->   Chart.js charts render. The "dashboard" the user asked for does not exist yet.
+> **HIGH — FIXED 2026-06-14:**
+> - ✅ H1 — `tf_budget_read` computes real `current_spend`/`fanout_spend` via `observe::fold_events`.
+> - ✅ H2 — `tf_report` computes window bounds per requested period + folds real totals.
+> - ✅ H3 — `tf_observe` returns real deduped-per-session spend spans from the ledger.
+> - ✅ H4 — `tf_signal` persists to `mcp-signals.json`; `tf_plan_open`/`close` delegate to
+>   `scheduler::plan_open`/`plan_close` (plan_id persisted & verified); `tf_schedule_toggle`
+>   writes `schedule-enabled.json`.
+> - ✅ H5 — Resources read real state: `tf://status` reflects real signals + folded budget,
+>   `tf://events` reads the real ledger (last 100), `tf://calibration` reads the windows snapshot.
+> - ✅ H6 — Hand-rolled stdio loop now implements the MCP handshake (`initialize`,
+>   `tools/list`, `resources/list`, `tools/call`); unused `rmcp` (and its `tokio`) removed
+>   from the `mcp` feature, shrinking `Cargo.lock` by 448 lines — binary-size intent honoured.
+> - ✅ H7 — Dashboard reads `session_cap_tokens`/`per_fanout_cap_tokens`; shows the real
+>   configured cap and a correct ceiling % (verified live: 14.4% at 71.9M/500M).
+> - ✅ DASH-FRONTEND — `assets/dashboard.html` now renders four real Chart.js views (budget
+>   gauge, spend-by-model doughnut, guard-efficacy bar, MAPE stat card) with 3s auto-refresh,
+>   per-card error states, and empty-state handling. Served as text/html (verified live).
 >
-> **MEDIUM:** M1 — MCP tests assert response shape only, not behaviour (the hole that let the
-> facade pass the gate). Rework must rewrite them to seed state and assert derived values.
+> **MEDIUM — FIXED 2026-06-14:**
+> - ✅ M1 — MCP tests rewritten to seed real state and assert derived values (192 workspace
+>   tests, green 3× consecutive, no flakiness).
+>
+> **REMAINING (blocks COMPLETE):**
+> - ⬜ AC#6 — the WebSocket `/ws` route is not yet wired into the axum router; live charts
+>   refresh by 3s polling, not by push. The telemetry file-watcher + fold exist; the route
+>   and broadcast wiring remain.
 
 **Brief Description**
 Add Model Context Protocol (MCP) server surface to the `tf` binary so Claude Code agents can invoke token-scheduler operations as MCP tools (not just CLI). Expose real-time telemetry via WebSocket and dashboard via embedded HTTP server showing live budget gauges, spend by model, guard efficacy (SAVES vs BLOWN), and estimator accuracy. Support optional Prometheus metrics export for Grafana integration.
@@ -91,16 +92,16 @@ Add Model Context Protocol (MCP) server surface to the `tf` binary so Claude Cod
 - WHERE a docker-compose.yml is provided, THE SYSTEM SHALL enable integration with a Grafana datasource (scrape Prometheus endpoint)
 
 ### Acceptance Criteria
-(status as of corrected review 2026-06-13: ✅ met · ❌ not met · 🔧 in rework)
-1. ✅ `tf mcp` starts without error; reads tool invocations from stdin
-2. ❌ `tf_gate` tool returns a REAL verdict `{"verdict":…,"reason":…,"ceiling":{…}}` — currently fabricated (C1) 🔧
-3. 🔧 `tf_budget_read`/`tf_budget_set` work; state persists — read hardcodes spend to 0 (H1)
-4. ❌ `tf_report`, `tf_observe`, `tf_spend` return REAL JSON — currently zeros/empty/dropped (C2,H2,H3) 🔧
-5. 🔧 `tf dashboard` serves HTML with embedded Chart.js charts — serves HTML, but charts don't render (DASH-FRONTEND)
-6. ❌ WebSocket at `ws://…/ws` streams new events within 1s — endpoint not wired into the router yet
+(status as of rework 2026-06-14: ✅ met · ❌ not met)
+1. ✅ `tf mcp` starts without error; reads tool invocations from stdin (now with MCP handshake)
+2. ✅ `tf_gate` returns a REAL verdict via `scheduler::gate()` + `map_verdict`
+3. ✅ `tf_budget_read`/`tf_budget_set` work; state persists; real spend folded in
+4. ✅ `tf_report`, `tf_observe`, `tf_spend` return REAL JSON (per-period windows, real ledger)
+5. ✅ `tf dashboard` serves HTML with four rendering Chart.js views (verified live)
+6. ❌ WebSocket at `ws://…/ws` streams new events within 1s — `/ws` route not yet wired (only remaining gap)
 7. ✅ `GET /metrics` returns valid Prometheus text format (when --prometheus set)
-8. 🔧 Binary size with no `dashboard` feature ≤105% — gating present but `mcp` leaks unused rmcp/tokio (H6)
-9. 🔧 `cargo test --workspace` passes — but MCP tests assert shape not behaviour (M1); must be rewritten
+8. ✅ Binary size with no `dashboard` feature ≤105% — `mcp` no longer leaks rmcp/tokio (H6 fixed)
+9. ✅ `cargo test --workspace --all-features` passes (192 tests, green 3×); MCP tests now assert behaviour
 10. ✅ `tf --help` lists `mcp` and `dashboard` subcommands
 
 ### Implementation Notes
