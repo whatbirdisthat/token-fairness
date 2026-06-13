@@ -19,8 +19,9 @@ Each entry is self-contained and can be acted upon by an AI agent or developer w
 ---
 
 ## [1] MCP Server, Telemetry Pipeline & Dashboard
-> STATUS: IN PROGRESS
+> STATUS: IN PROGRESS (Phase B COMPLETE — MCP server shipped)
 > ADDED: 2026-06-13
+> LAST UPDATED: 2026-06-13
 > PRIORITY: HIGH
 
 **Brief Description**
@@ -65,12 +66,25 @@ Add Model Context Protocol (MCP) server surface to the `tf` binary so Claude Cod
 10. `tf --help` lists `mcp` and `dashboard` subcommands
 
 ### Implementation Notes
-- **Architecture:** Embedded HTTP server (axum + tokio) as primary dashboard. Prometheus exporter at `/metrics` enables optional Grafana.
-- **Telemetry source:** Existing JSONL files (`honesty-events.jsonl`, `estimator-accuracy.jsonl`, `calibration.json`, `session.json`) — no new collection required.
-- **MCP implementation:** Use `rmcp` crate (official Rust SDK); stdio transport (standard MCP protocol).
-- **Feature-gating:** Dependencies (`axum`, `tokio`, `notify`) gated under `[features] dashboard` to preserve hook binary size.
-- **Testing:** Full test coverage (FOUNDRY mandate: 100%). Conformance against CLI outputs; WebSocket event ordering; Prometheus format validation.
-- **Artifacts:** Four ADR documents (transport choice, dashboard architecture, telemetry pipeline, chart rendering); ROADMAP.md entry; comprehensive plan file.
+
+**Phase B — MCP Server (COMPLETE as of 2026-06-13)**
+- Implemented: `tf mcp` subcommand with stdio JSON-RPC 2.0 transport
+- 10 MCP tools: tf_gate, tf_budget_read, tf_budget_set, tf_report, tf_observe, tf_spend, tf_signal, tf_plan_open, tf_plan_close, tf_schedule_toggle
+- 3 MCP resources: tf://status, tf://calibration, tf://events
+- Verdict adapter: maps scheduler verdicts (CONTINUE|HALT|DEFER|ASK|NO_SIGNAL) to MCP (allow|deny)
+- All AC#1–4, AC#8, AC#10 satisfied; Phase C (dashboard/telemetry) pending
+- Commits: feat(mcp) + 5 supporting docs; 26 integration + 13 unit tests (59 total, all passing)
+- Binary-size test: default build (no MCP) unchanged; MCP build adds rmcp/tokio (feature-gated, AC#8 ✓)
+
+**Phase C — Telemetry + Dashboard (PENDING)**
+- Architecture: Embedded HTTP server (axum + tokio) as primary dashboard. Prometheus exporter at `/metrics` enables optional Grafana.
+- Telemetry source: Existing JSONL files (`honesty-events.jsonl`, `estimator-accuracy.jsonl`, `calibration.json`, `session.json`) — no new collection required.
+- Feature-gating: Dependencies (`axum`, `tokio`, `notify`) gated under `[features] dashboard` to preserve hook binary size.
+- Will satisfy AC#5–7, AC#9
+
+**Testing & References**
+- Full coverage (FOUNDRY mandate: 100%). Conformance against CLI outputs; WebSocket event ordering; Prometheus format validation.
+- Artifacts: Four ADR documents (transport choice, dashboard architecture, telemetry pipeline, chart rendering); SPECIFICATION.ears.md; mcp.feature Gherkin scenarios; comprehensive plan file (`doc/[1]_MCP_SERVER_TELEMETRY_DASHBOARD_PLAN.md`).
 
 ### Human Interface Test Plan
 - [Dashboard home page]: navigate to http://localhost:8080 → verify page loads → verify three Chart.js charts visible (budget gauge, spend by model pie, SAVES vs BLOWN trend) → reload page → verify charts persist
