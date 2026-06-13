@@ -49,12 +49,16 @@ fn send_tool_call(
     };
 
     let request_str = request.to_string() + "\n";
-    stdin.write_all(request_str.as_bytes()).expect("failed to write request");
+    stdin
+        .write_all(request_str.as_bytes())
+        .expect("failed to write request");
     stdin.flush().expect("failed to flush stdin");
 
     let mut reader = BufReader::new(stdout);
     let mut response_line = String::new();
-    reader.read_line(&mut response_line).expect("failed to read response");
+    reader
+        .read_line(&mut response_line)
+        .expect("failed to read response");
 
     let response: Value = serde_json::from_str(&response_line)
         .expect(&format!("failed to parse response: {}", response_line));
@@ -379,10 +383,14 @@ fn test_tf_plan_close_closes_plan() {
     let close_params = json!({
         "plan_id": plan_id
     });
-    let (_response, close_result) = send_tool_call(&mut server, "tf_plan_close", Some(close_params));
+    let (_response, close_result) =
+        send_tool_call(&mut server, "tf_plan_close", Some(close_params));
     let close_result = close_result.expect("plan_close should succeed");
 
-    assert_eq!(close_result.get("success").unwrap().as_bool().unwrap(), true);
+    assert_eq!(
+        close_result.get("success").unwrap().as_bool().unwrap(),
+        true
+    );
     assert!(close_result.get("closed_at").is_some());
 }
 
@@ -490,7 +498,9 @@ fn test_unknown_method_returns_error() {
 
     let mut reader = BufReader::new(stdout);
     let mut response_line = String::new();
-    reader.read_line(&mut response_line).expect("failed to read");
+    reader
+        .read_line(&mut response_line)
+        .expect("failed to read");
 
     let response: Value = serde_json::from_str(&response_line).expect("failed to parse response");
 
@@ -530,7 +540,9 @@ fn test_malformed_json_rpc_returns_error() {
 
     let mut reader = BufReader::new(stdout);
     let mut response_line = String::new();
-    reader.read_line(&mut response_line).expect("failed to read");
+    reader
+        .read_line(&mut response_line)
+        .expect("failed to read");
 
     // May be a parse error or invalid request depending on the server implementation
     let response: Value = serde_json::from_str(&response_line).expect("failed to parse response");
@@ -557,7 +569,9 @@ fn test_invalid_json_returns_parse_error() {
 
     let mut reader = BufReader::new(stdout);
     let mut response_line = String::new();
-    reader.read_line(&mut response_line).expect("failed to read");
+    reader
+        .read_line(&mut response_line)
+        .expect("failed to read");
 
     let response: Value = serde_json::from_str(&response_line).expect("failed to parse response");
     assert!(response.get("error").is_some());

@@ -11,8 +11,8 @@
 //!
 //! All code is fallible (returns Result); no unwrap/expect/panic outside tests.
 
-use serde_json::{json, Value};
 use crate::state;
+use serde_json::{json, Value};
 
 // ============================================================================
 // VERDICT-MAPPING ADAPTER (Pure function)
@@ -40,8 +40,14 @@ pub fn map_verdict(cli_verdict: &str, reason: &str, ceiling: &Value) -> Value {
         "CONTINUE" => ("allow", "within budget headroom".to_string()),
         "HALT" => ("deny", "token ceiling exceeded".to_string()),
         "DEFER" => ("deny", "insufficient headroom; defer execution".to_string()),
-        "ASK" => ("deny", "uncertain signal state; manual approval required".to_string()),
-        "NO_SIGNAL" => ("deny", "no live signal available; falling back to conservative deny".to_string()),
+        "ASK" => (
+            "deny",
+            "uncertain signal state; manual approval required".to_string(),
+        ),
+        "NO_SIGNAL" => (
+            "deny",
+            "no live signal available; falling back to conservative deny".to_string(),
+        ),
         _ => ("deny", format!("unknown verdict: {}", cli_verdict)),
     };
 
@@ -67,16 +73,19 @@ pub fn map_verdict(cli_verdict: &str, reason: &str, ceiling: &Value) -> Value {
 /// Accepts a ceiling payload and returns a verdict (allow|deny) with reason and ceiling.
 /// Invokes the scheduler gate logic and adapts the result to MCP vocabulary.
 pub fn handle_tf_gate(params: &Value) -> Result<Value, String> {
-    let ceiling_obj = params.get("ceiling")
+    let ceiling_obj = params
+        .get("ceiling")
         .ok_or("missing 'ceiling' parameter")?
         .clone();
 
     // Extract used_pct and headroom from the ceiling to determine verdict
-    let used_pct = ceiling_obj.get("used_pct")
+    let used_pct = ceiling_obj
+        .get("used_pct")
         .and_then(|v| v.as_i64())
         .ok_or("missing or invalid 'used_pct' in ceiling")?;
 
-    let headroom = ceiling_obj.get("headroom")
+    let headroom = ceiling_obj
+        .get("headroom")
         .and_then(|v| v.as_i64())
         .ok_or("missing or invalid 'headroom' in ceiling")?;
 
@@ -129,11 +138,13 @@ pub fn handle_tf_budget_read(_params: &Value) -> Result<Value, String> {
 ///
 /// Updates a budget configuration key (session_cap or per_fanout_cap).
 pub fn handle_tf_budget_set(params: &Value) -> Result<Value, String> {
-    let key = params.get("key")
+    let key = params
+        .get("key")
         .and_then(|v| v.as_str())
         .ok_or("missing or invalid 'key' parameter")?;
 
-    let value = params.get("value")
+    let value = params
+        .get("value")
         .and_then(|v| v.as_i64())
         .ok_or("missing or invalid 'value' parameter")?;
 
@@ -168,13 +179,14 @@ pub fn handle_tf_budget_set(params: &Value) -> Result<Value, String> {
 ///
 /// Returns a spend report for a given time window (hour, day, month, ytd).
 pub fn handle_tf_report(params: &Value) -> Result<Value, String> {
-    let window = params.get("window")
+    let window = params
+        .get("window")
         .and_then(|v| v.as_str())
         .unwrap_or("day");
 
     // Validate window
     match window {
-        "hour" | "day" | "month" | "ytd" => {},
+        "hour" | "day" | "month" | "ytd" => {}
         _ => return Err(format!("invalid window: {}", window)),
     }
 
@@ -197,13 +209,14 @@ pub fn handle_tf_report(params: &Value) -> Result<Value, String> {
 ///
 /// Returns an array of deduplicated span observations for a given window.
 pub fn handle_tf_observe(params: &Value) -> Result<Value, String> {
-    let window = params.get("window")
+    let window = params
+        .get("window")
         .and_then(|v| v.as_str())
         .unwrap_or("day");
 
     // Validate window
     match window {
-        "hour" | "day" | "month" | "ytd" => {},
+        "hour" | "day" | "month" | "ytd" => {}
         _ => return Err(format!("invalid window: {}", window)),
     }
 
@@ -217,19 +230,23 @@ pub fn handle_tf_observe(params: &Value) -> Result<Value, String> {
 ///
 /// Records a new spend event to the ledger.
 pub fn handle_tf_spend(params: &Value) -> Result<Value, String> {
-    let span_id = params.get("span_id")
+    let span_id = params
+        .get("span_id")
         .and_then(|v| v.as_str())
         .ok_or("missing or invalid 'span_id'")?;
 
-    let cost = params.get("cost")
+    let cost = params
+        .get("cost")
         .and_then(|v| v.as_i64())
         .ok_or("missing or invalid 'cost'")?;
 
-    let model = params.get("model")
+    let model = params
+        .get("model")
         .and_then(|v| v.as_str())
         .ok_or("missing or invalid 'model'")?;
 
-    let role = params.get("role")
+    let role = params
+        .get("role")
         .and_then(|v| v.as_str())
         .ok_or("missing or invalid 'role'")?;
 
@@ -249,22 +266,24 @@ pub fn handle_tf_spend(params: &Value) -> Result<Value, String> {
 ///
 /// Sets a signal state (gate, budget, observability) to OK or ERROR.
 pub fn handle_tf_signal(params: &Value) -> Result<Value, String> {
-    let name = params.get("name")
+    let name = params
+        .get("name")
         .and_then(|v| v.as_str())
         .ok_or("missing or invalid 'name'")?;
 
-    let status = params.get("status")
+    let status = params
+        .get("status")
         .and_then(|v| v.as_str())
         .ok_or("missing or invalid 'status'")?;
 
     // Validate name and status
     match name {
-        "gate" | "budget" | "observability" => {},
+        "gate" | "budget" | "observability" => {}
         _ => return Err(format!("invalid signal name: {}", name)),
     }
 
     match status {
-        "OK" | "ERROR" => {},
+        "OK" | "ERROR" => {}
         _ => return Err(format!("invalid status: {}", status)),
     }
 
@@ -282,11 +301,13 @@ pub fn handle_tf_signal(params: &Value) -> Result<Value, String> {
 ///
 /// Creates a new open-ended budget plan.
 pub fn handle_tf_plan_open(params: &Value) -> Result<Value, String> {
-    let title = params.get("title")
+    let title = params
+        .get("title")
         .and_then(|v| v.as_str())
         .ok_or("missing or invalid 'title'")?;
 
-    let budget_tokens = params.get("budget_tokens")
+    let budget_tokens = params
+        .get("budget_tokens")
         .and_then(|v| v.as_i64())
         .ok_or("missing or invalid 'budget_tokens'")?;
 
@@ -307,7 +328,8 @@ pub fn handle_tf_plan_open(params: &Value) -> Result<Value, String> {
 ///
 /// Closes an open budget plan.
 pub fn handle_tf_plan_close(params: &Value) -> Result<Value, String> {
-    let plan_id = params.get("plan_id")
+    let plan_id = params
+        .get("plan_id")
         .and_then(|v| v.as_str())
         .ok_or("missing or invalid 'plan_id'")?;
 
@@ -325,7 +347,8 @@ pub fn handle_tf_plan_close(params: &Value) -> Result<Value, String> {
 ///
 /// Enables or disables the window-aware schedule gate.
 pub fn handle_tf_schedule_toggle(params: &Value) -> Result<Value, String> {
-    let enabled = params.get("enabled")
+    let enabled = params
+        .get("enabled")
         .and_then(|v| v.as_bool())
         .ok_or("missing or invalid 'enabled'")?;
 

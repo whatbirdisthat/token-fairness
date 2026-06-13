@@ -168,22 +168,42 @@ impl PrometheusMetrics {
 
 impl std::fmt::Display for PrometheusMetrics {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        writeln!(f, "# HELP tf_session_spend_tokens Current session cumulative spend")?;
+        writeln!(
+            f,
+            "# HELP tf_session_spend_tokens Current session cumulative spend"
+        )?;
         writeln!(f, "# TYPE tf_session_spend_tokens gauge")?;
         writeln!(f, "tf_session_spend_tokens {}", self.session_spend_tokens)?;
         writeln!(f)?;
 
-        writeln!(f, "# HELP tf_session_ceiling_percent Session spend as percentage of ceiling")?;
+        writeln!(
+            f,
+            "# HELP tf_session_ceiling_percent Session spend as percentage of ceiling"
+        )?;
         writeln!(f, "# TYPE tf_session_ceiling_percent gauge")?;
-        writeln!(f, "tf_session_ceiling_percent {:.2}", self.session_ceiling_percent)?;
+        writeln!(
+            f,
+            "tf_session_ceiling_percent {:.2}",
+            self.session_ceiling_percent
+        )?;
         writeln!(f)?;
 
-        writeln!(f, "# HELP tf_weekly_ceiling_percent Weekly spend as percentage of rolling window")?;
+        writeln!(
+            f,
+            "# HELP tf_weekly_ceiling_percent Weekly spend as percentage of rolling window"
+        )?;
         writeln!(f, "# TYPE tf_weekly_ceiling_percent gauge")?;
-        writeln!(f, "tf_weekly_ceiling_percent {:.2}", self.weekly_ceiling_percent)?;
+        writeln!(
+            f,
+            "tf_weekly_ceiling_percent {:.2}",
+            self.weekly_ceiling_percent
+        )?;
         writeln!(f)?;
 
-        writeln!(f, "# HELP tf_guard_saves_total Total count of guard SAVE verdicts")?;
+        writeln!(
+            f,
+            "# HELP tf_guard_saves_total Total count of guard SAVE verdicts"
+        )?;
         writeln!(f, "# TYPE tf_guard_saves_total counter")?;
         writeln!(f, "tf_guard_saves_total {}", self.guard_saves_total)?;
         writeln!(f)?;
@@ -193,9 +213,16 @@ impl std::fmt::Display for PrometheusMetrics {
         writeln!(f, "tf_guard_blown_total {}", self.guard_blown_total)?;
         writeln!(f)?;
 
-        writeln!(f, "# HELP tf_guard_procedural_denies_total Total procedural denials")?;
+        writeln!(
+            f,
+            "# HELP tf_guard_procedural_denies_total Total procedural denials"
+        )?;
         writeln!(f, "# TYPE tf_guard_procedural_denies_total counter")?;
-        writeln!(f, "tf_guard_procedural_denies_total {}", self.guard_procedural_denies_total)?;
+        writeln!(
+            f,
+            "tf_guard_procedural_denies_total {}",
+            self.guard_procedural_denies_total
+        )?;
 
         Ok(())
     }

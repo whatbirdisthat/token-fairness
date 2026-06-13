@@ -67,8 +67,8 @@ pub fn read_new_bytes(events_path: &str, offset: &mut u64) -> Result<Vec<u8>, Te
     }
 
     // Read from offset to EOF
-    let mut file = std::fs::File::open(events_path)
-        .map_err(|e| TelemetryError::IoError(e.to_string()))?;
+    let mut file =
+        std::fs::File::open(events_path).map_err(|e| TelemetryError::IoError(e.to_string()))?;
     use std::io::{Read, Seek, SeekFrom};
     file.seek(SeekFrom::Start(*offset))
         .map_err(|e| TelemetryError::IoError(e.to_string()))?;
@@ -391,9 +391,18 @@ mod tests {
     fn test_fold_tallies_gate_verdicts() {
         let day = 20_616 * 86_400;
         let lines = vec![
-            format!(r#"{{"ts":{},"kind":"gate","class":"save","reason":"exceeds-per-fanout-cap","est":120000}}"#, day),
-            format!(r#"{{"ts":{},"kind":"gate","class":"procedural-deny","reason":"no declared budget"}}"#, day),
-            format!(r#"{{"ts":{},"kind":"gate","class":"allow","reason":"armed","est":40000}}"#, day),
+            format!(
+                r#"{{"ts":{},"kind":"gate","class":"save","reason":"exceeds-per-fanout-cap","est":120000}}"#,
+                day
+            ),
+            format!(
+                r#"{{"ts":{},"kind":"gate","class":"procedural-deny","reason":"no declared budget"}}"#,
+                day
+            ),
+            format!(
+                r#"{{"ts":{},"kind":"gate","class":"allow","reason":"armed","est":40000}}"#,
+                day
+            ),
         ];
         let refs: Vec<&str> = lines.iter().map(|s| &s[..]).collect();
         let state = fold_events(&refs, Period::Day);
@@ -408,7 +417,10 @@ mod tests {
     fn test_fold_tallies_blown_events() {
         let day = 20_616 * 86_400;
         let lines = vec![
-            format!(r#"{{"ts":{},"kind":"blown","reason":"5h-window exhausted"}}"#, day),
+            format!(
+                r#"{{"ts":{},"kind":"blown","reason":"5h-window exhausted"}}"#,
+                day
+            ),
             format!(r#"{{"ts":{},"kind":"blown","reason":"paid lockout"}}"#, day),
         ];
         let refs: Vec<&str> = lines.iter().map(|s| &s[..]).collect();
@@ -421,14 +433,18 @@ mod tests {
     fn test_fold_accuracy_calculates_mape() {
         let mut state = FoldState::default();
         let lines = vec![
-            r#"{"at":1000,"est":100.0,"actual":90.0}"#,  // APE = 10/90 = 0.111...
+            r#"{"at":1000,"est":100.0,"actual":90.0}"#, // APE = 10/90 = 0.111...
             r#"{"at":2000,"est":100.0,"actual":100.0}"#, // APE = 0/100 = 0.0
             r#"{"at":3000,"est":100.0,"actual":110.0}"#, // APE = 10/110 = 0.0909...
         ];
         fold_accuracy(&mut state, &lines, Period::Day);
 
         // MAPE = (0.111 + 0.0 + 0.0909) / 3 ≈ 0.0673
-        assert!((state.mape - 0.0673).abs() < 0.001, "MAPE should be ~0.0673, got {}", state.mape);
+        assert!(
+            (state.mape - 0.0673).abs() < 0.001,
+            "MAPE should be ~0.0673, got {}",
+            state.mape
+        );
     }
 
     #[test]
@@ -441,7 +457,10 @@ mod tests {
         let state1 = fold_events(&lines, Period::Day);
         let state2 = fold_events(&lines, Period::Day);
 
-        assert_eq!(state1, state2, "Folding same sequence twice should be identical");
+        assert_eq!(
+            state1, state2,
+            "Folding same sequence twice should be identical"
+        );
     }
 
     #[test]

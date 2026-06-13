@@ -63,7 +63,10 @@ fn handle_json_rpc_request(request_str: &str) -> String {
     let jsonrpc_version = request.get("jsonrpc").and_then(|v| v.as_str());
     let method = request.get("method").and_then(|v| v.as_str());
     let id = request.get("id");
-    let params = request.get("params").cloned().unwrap_or(Value::Object(Default::default()));
+    let params = request
+        .get("params")
+        .cloned()
+        .unwrap_or(Value::Object(Default::default()));
 
     // Validate JSON-RPC version
     if jsonrpc_version != Some("2.0") {
@@ -171,23 +174,49 @@ mod tests {
     fn test_parse_error() {
         let response_str = handle_json_rpc_request("{ invalid json }");
         let response: Value = serde_json::from_str(&response_str).unwrap();
-        assert_eq!(response.get("error").unwrap().get("code").unwrap().as_i64().unwrap(), -32700);
+        assert_eq!(
+            response
+                .get("error")
+                .unwrap()
+                .get("code")
+                .unwrap()
+                .as_i64()
+                .unwrap(),
+            -32700
+        );
     }
 
     #[test]
     fn test_invalid_request_no_method() {
         let response_str = handle_json_rpc_request(r#"{"jsonrpc":"2.0","id":1}"#);
         let response: Value = serde_json::from_str(&response_str).unwrap();
-        assert_eq!(response.get("error").unwrap().get("code").unwrap().as_i64().unwrap(), -32600);
+        assert_eq!(
+            response
+                .get("error")
+                .unwrap()
+                .get("code")
+                .unwrap()
+                .as_i64()
+                .unwrap(),
+            -32600
+        );
     }
 
     #[test]
     fn test_method_not_found() {
-        let response_str = handle_json_rpc_request(
-            r#"{"jsonrpc":"2.0","method":"unknown_method","id":1}"#
-        );
+        let response_str =
+            handle_json_rpc_request(r#"{"jsonrpc":"2.0","method":"unknown_method","id":1}"#);
         let response: Value = serde_json::from_str(&response_str).unwrap();
-        assert_eq!(response.get("error").unwrap().get("code").unwrap().as_i64().unwrap(), -32601);
+        assert_eq!(
+            response
+                .get("error")
+                .unwrap()
+                .get("code")
+                .unwrap()
+                .as_i64()
+                .unwrap(),
+            -32601
+        );
     }
 
     #[test]
@@ -201,7 +230,8 @@ mod tests {
 
     #[test]
     fn test_resource_dispatch() {
-        let request = r#"{"jsonrpc":"2.0","method":"resources/read","params":{"uri":"tf://status"},"id":1}"#;
+        let request =
+            r#"{"jsonrpc":"2.0","method":"resources/read","params":{"uri":"tf://status"},"id":1}"#;
         let response_str = handle_json_rpc_request(request);
         let response: Value = serde_json::from_str(&response_str).unwrap();
         assert!(response.get("result").is_some(), "should have a result");

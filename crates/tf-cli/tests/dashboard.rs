@@ -50,7 +50,10 @@ fn test_file_watcher_resolves_via_observe_events_path() {
         // Act: The watcher should resolve the path correctly
         // (This test will pass once telemetry.rs:watch_events_file() is implemented)
         // For now, we assert the path exists and is accessible
-        assert!(events_file.exists(), "Events file must exist at env-resolved path");
+        assert!(
+            events_file.exists(),
+            "Events file must exist at env-resolved path"
+        );
 
         // Assert: The file can be read from
         let content = fs::read_to_string(&events_file).unwrap();
