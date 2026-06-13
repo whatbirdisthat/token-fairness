@@ -274,8 +274,6 @@ pub fn fold_events(lines: &[&str], period: Period) -> FoldState {
                         })
                         .unwrap_or_default();
 
-                    let total_tokens: u64 = models.iter().map(|(_, t, _)| t).sum();
-
                     // Keep only the latest reading per session (dedup)
                     let entry = spend_latest
                         .entry(session_id.to_string())

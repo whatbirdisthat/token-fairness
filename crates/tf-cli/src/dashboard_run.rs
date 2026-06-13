@@ -49,16 +49,106 @@ impl DashboardArgs {
 /// Run the dashboard server.
 /// Returns Out with status and exit code.
 pub fn run(args: DashboardArgs) -> Out {
-    // For now, this is a placeholder. The actual HTTP server would be spawned here.
-    // Once the HTTP integration is implemented, this will bind to port 8080 and start serving.
+    println!("Dashboard running on 127.0.0.1:8080");
+    if args.prometheus {
+        println!("Prometheus metrics enabled at GET /metrics");
+    }
 
-    let msg = if args.prometheus {
-        "Dashboard running on 127.0.0.1:8080 with Prometheus metrics enabled at GET /metrics\n"
-    } else {
-        "Dashboard running on 127.0.0.1:8080\n"
+    // Start the async runtime and run the dashboard server.
+    let rt = match tokio::runtime::Runtime::new() {
+        Ok(rt) => rt,
+        Err(e) => return Out::err(format!("failed to create tokio runtime: {}", e), 1),
     };
 
-    Out::ok(msg)
+    if let Err(e) = rt.block_on(start_server(args.prometheus)) {
+        return Out::err(format!("dashboard server error: {}", e), 1);
+    }
+
+    // Server exited normally (e.g., Ctrl+C).
+    Out::ok("")
+}
+
+/// Start the axum HTTP server on 127.0.0.1:8080.
+async fn start_server(enable_prometheus: bool) -> Result<(), String> {
+    use axum::routing::get;
+    use axum::Router;
+
+    // Build the router with all endpoints
+    let mut router = Router::new()
+        .route("/", get(|| async { tf_core::dashboard::DASHBOARD_HTML }))
+        .route(
+            "/api/session-budget",
+            get(|| async {
+                match tf_core::dashboard::endpoint_session_budget() {
+                    Ok(json) => axum::Json(json),
+                    Err(e) => axum::Json(serde_json::json!({"error": e.to_string()})),
+                }
+            }),
+        )
+        .route(
+            "/api/spend-by-model",
+            get(|| async {
+                match tf_core::dashboard::endpoint_spend_by_model() {
+                    Ok(json) => axum::Json(json),
+                    Err(e) => axum::Json(serde_json::json!({"error": e.to_string()})),
+                }
+            }),
+        )
+        .route(
+            "/api/guard-efficacy",
+            get(|| async {
+                match tf_core::dashboard::endpoint_guard_efficacy() {
+                    Ok(json) => axum::Json(json),
+                    Err(e) => axum::Json(serde_json::json!({"error": e.to_string()})),
+                }
+            }),
+        )
+        .route(
+            "/api/estimator-accuracy",
+            get(|| async {
+                match tf_core::dashboard::endpoint_estimator_accuracy() {
+                    Ok(json) => axum::Json(json),
+                    Err(e) => axum::Json(serde_json::json!({"error": e.to_string()})),
+                }
+            }),
+        );
+
+    // Conditionally add Prometheus metrics endpoint
+    if enable_prometheus {
+        router = router.route(
+            "/metrics",
+            get(|| async {
+                match tf_core::dashboard::compute_fold() {
+                    Ok(state) => {
+                        let budget_path =
+                            format!("{}/budget.json", tf_core::state::state_dir());
+                        let budget_json =
+                            tf_core::state::read_json(&budget_path)
+                                .unwrap_or(serde_json::json!({}));
+                        let metrics = tf_core::dashboard::PrometheusMetrics::from_fold(
+                            &state,
+                            &budget_json,
+                        );
+                        metrics.to_string()
+                    }
+                    Err(e) => format!("# ERROR: {}\n", e),
+                }
+            }),
+        );
+    }
+
+    // Bind and listen
+    let addr = "127.0.0.1:8080"
+        .parse::<std::net::SocketAddr>()
+        .map_err(|e| e.to_string())?;
+
+    let listener = tokio::net::TcpListener::bind(addr)
+        .await
+        .map_err(|e| e.to_string())?;
+
+    axum::serve(listener, router)
+        .await
+        .map_err(|e| e.to_string())
 }
 
 #[cfg(test)]
