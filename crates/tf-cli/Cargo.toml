@@ -13,6 +13,10 @@ tf-core = { path = "../tf-core" }
 # libc only for the single-instance flock in `run-offpeak` (the OS-cron entry point);
 # a single syscall, negligible binary-size cost.
 libc = "0.2"
+# MCP server support (optional, feature-gated)
+rmcp = { version = "0.2", optional = true }
+# serde_json used by CLI for JSON formatting/parsing
+serde_json.workspace = true
 
 [dev-dependencies]
-serde_json = { version = "1", features = ["preserve_order"] }
+# serde_json is in workspace dependencies now, accessible to tests

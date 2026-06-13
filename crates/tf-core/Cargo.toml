@@ -9,4 +9,4 @@ license.workspace = true
 # preserve_order so the on-disk key order matches the bash's jq insertion-order writes,
 # keeping `status`/`list`/`get` byte-faithful to the oracle.
 [dependencies]
-serde_json = { version = "1", features = ["preserve_order"] }
+serde_json.workspace = true

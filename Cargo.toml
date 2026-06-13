@@ -9,6 +9,15 @@ license = "MIT OR Apache-2.0"
 repository = "https://github.com/agentic-underground/token-fairness"
 
 # A scheduler that runs on hot hooks wants the smallest, fastest binary we can ship.
+[workspace.dependencies]
+serde_json = { version = "1", features = ["preserve_order"] }
+
+[features]
+# Feature gates for optional heavy dependencies (tokio/rmcp/axum/notify)
+# Default: no features (pure hook binary). Use `--features mcp` or `--features dashboard`
+# for opt-in surfaces.
+mcp = ["rmcp"]
+
 [profile.release]
 opt-level = "z"
 lto = true
