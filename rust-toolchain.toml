@@ -1,0 +1,12 @@
+# Pin the Rust toolchain so the fmt / clippy / test gate is reproducible across every machine
+# and in CI. Without this, `stable` (locally and via `dtolnay/rust-toolchain@stable` in CI) floats
+# with each Rust release, so new clippy lints can appear or vanish between runs — exactly how the
+# 1.96 lint debt accrued invisibly behind a compile failure.
+#
+# To upgrade: bump `channel` here AND the `dtolnay/rust-toolchain@<version>` refs in
+# .github/workflows/{verify,release}.yml in the SAME PR, fixing any newly-surfaced lints
+# deliberately rather than discovering them by drift.
+[toolchain]
+channel = "1.96.0"
+components = ["rustfmt", "clippy"]
+profile = "minimal"

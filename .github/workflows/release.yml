@@ -33,7 +33,7 @@ jobs:
             asset: tf-arm64-darwin   # macOS `uname -m` is `arm64`
     steps:
       - uses: actions/checkout@v4
-      - uses: dtolnay/rust-toolchain@stable
+      - uses: dtolnay/rust-toolchain@1.96.0
         with:
           targets: ${{ matrix.target }}
       - name: install cross (linux musl targets)

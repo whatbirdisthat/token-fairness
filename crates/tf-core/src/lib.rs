@@ -9,10 +9,14 @@
 pub mod budget;
 pub mod calibrate;
 pub mod ceiling;
+#[cfg(feature = "dashboard")]
+pub mod dashboard;
 pub mod ensemble;
 pub mod estimate;
 pub mod fmt;
 pub mod ledger;
+#[cfg(feature = "mcp")]
+pub mod mcp;
 pub mod observe;
 pub mod offpeak;
 pub mod registry;
@@ -23,6 +27,8 @@ pub mod signal;
 pub mod snapshot;
 pub mod spend;
 pub mod state;
+#[cfg(feature = "dashboard")]
+pub mod telemetry;
 pub mod windows;
 
 /// Test-only support shared across modules. The `tf` modules resolve state paths from process

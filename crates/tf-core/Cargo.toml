@@ -4,9 +4,15 @@ version.workspace = true
 edition.workspace = true
 license.workspace = true
 
+[features]
+# MCP server support (feature-gated)
+mcp = []
+# Dashboard and telemetry pipeline (feature-gated)
+dashboard = []
+
 # Parsing only for the arithmetic verbs (all output hand-formatted, see fmt.rs). The
 # stateful verbs (ledger/registry/snapshot/signal) DO serialize JSON state files; we use
 # preserve_order so the on-disk key order matches the bash's jq insertion-order writes,
 # keeping `status`/`list`/`get` byte-faithful to the oracle.
 [dependencies]
-serde_json = { version = "1", features = ["preserve_order"] }
+serde_json.workspace = true

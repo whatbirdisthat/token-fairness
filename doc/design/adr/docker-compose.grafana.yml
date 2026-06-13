@@ -1,0 +1,72 @@
+version: '3.8'
+
+# Optional Grafana integration for tf (token-fairness).
+#
+# This docker-compose file sets up a local Prometheus + Grafana stack that scrapes metrics
+# from the tf dashboard's Prometheus endpoint. This is an opt-in path for users who already
+# run Grafana and want to integrate tf metrics into their monitoring stack.
+#
+# Usage:
+#   tf dashboard --prometheus    # in one terminal
+#   docker compose -f docker-compose.grafana.yml up -d  # in another
+#   # open http://localhost:3000 (default Grafana creds: admin/admin)
+#   # add Prometheus datasource pointing to http://prometheus:9090
+#   # import dashboards using the JSON templates in doc/design/grafana/
+#
+
+services:
+  prometheus:
+    image: prom/prometheus:latest
+    ports:
+      - "9090:9090"
+    volumes:
+      - ./prometheus.yml:/etc/prometheus/prometheus.yml:ro
+      - prometheus_data:/prometheus
+    command:
+      - '--config.file=/etc/prometheus/prometheus.yml'
+      - '--storage.tsdb.path=/prometheus'
+    networks:
+      - tf-monitoring
+
+  grafana:
+    image: grafana/grafana:latest
+    ports:
+      - "3000:3000"
+    environment:
+      GF_SECURITY_ADMIN_USER: admin
+      GF_SECURITY_ADMIN_PASSWORD: admin
+      GF_INSTALL_PLUGINS: grafana-piechart-panel
+    volumes:
+      - grafana_data:/var/lib/grafana
+      - ./grafana/provisioning:/etc/grafana/provisioning:ro
+    depends_on:
+      - prometheus
+    networks:
+      - tf-monitoring
+
+volumes:
+  prometheus_data:
+  grafana_data:
+
+networks:
+  tf-monitoring:
+    driver: bridge
+
+---
+# Companion file: prometheus.yml (place in the same directory as docker-compose.grafana.yml)
+#
+# global:
+#   scrape_interval: 15s
+#   evaluation_interval: 15s
+#
+# scrape_configs:
+#   - job_name: 'tf-scheduler'
+#     static_configs:
+#       - targets: ['host.docker.internal:8080']  # if tf runs on the host machine
+#     metrics_path: '/metrics'
+#     scrape_interval: 5s
+#
+# ---
+# To use: copy the YAML block above (lines starting with "# ") into prometheus.yml in the
+# same directory. The docker-compose file will mount it. Adjust the targets IP/hostname if
+# tf runs on a different machine.

@@ -1,0 +1,465 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Token Fairness — Live Dashboard</title>
+    <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
+    <style>
+        :root {
+            --bg: #0e1116;
+            --panel: #171c24;
+            --panel-border: #232b36;
+            --text: #e6edf3;
+            --muted: #8b98a9;
+            --green: #2ea043;
+            --amber: #d29922;
+            --red: #f85149;
+            --accent: #58a6ff;
+        }
+        * { box-sizing: border-box; }
+        html, body { margin: 0; padding: 0; }
+        body {
+            font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+            background: var(--bg);
+            color: var(--text);
+            line-height: 1.4;
+            padding: 24px;
+            min-height: 100vh;
+        }
+        header {
+            display: flex;
+            align-items: baseline;
+            justify-content: space-between;
+            flex-wrap: wrap;
+            gap: 8px;
+            margin-bottom: 24px;
+            padding-bottom: 16px;
+            border-bottom: 1px solid var(--panel-border);
+        }
+        header h1 { font-size: 1.5rem; margin: 0; font-weight: 600; }
+        header h1 .dot {
+            display: inline-block; width: 10px; height: 10px; border-radius: 50%;
+            background: var(--green); margin-right: 8px; vertical-align: middle;
+            animation: pulse 2s infinite;
+        }
+        @keyframes pulse { 0%,100% { opacity: 1; } 50% { opacity: 0.3; } }
+        @media (prefers-reduced-motion: reduce) {
+            header h1 .dot { animation: none; }
+        }
+        #last-updated { color: var(--muted); font-size: 0.85rem; }
+        .grid {
+            display: grid;
+            grid-template-columns: repeat(auto-fit, minmax(320px, 1fr));
+            gap: 20px;
+        }
+        .card {
+            background: var(--panel);
+            border: 1px solid var(--panel-border);
+            border-radius: 10px;
+            padding: 20px;
+            display: flex;
+            flex-direction: column;
+            min-height: 280px;
+        }
+        .card h2 {
+            font-size: 0.95rem;
+            font-weight: 600;
+            margin: 0 0 4px 0;
+            color: var(--text);
+        }
+        .card .subtitle { font-size: 0.8rem; color: var(--muted); margin: 0 0 16px 0; min-height: 1.1em; }
+        .chart-wrap { position: relative; flex: 1; min-height: 180px; }
+        canvas { max-width: 100%; }
+        .center-stat {
+            flex: 1; display: flex; flex-direction: column;
+            align-items: center; justify-content: center; text-align: center;
+        }
+        .center-stat .big { font-size: 3rem; font-weight: 700; line-height: 1; }
+        .center-stat .label { color: var(--muted); font-size: 0.85rem; margin-top: 8px; }
+        /* Numeric readout centred over the doughnut gauge */
+        .gauge-overlay {
+            position: absolute; inset: 0;
+            display: flex; flex-direction: column;
+            align-items: center; justify-content: center;
+            pointer-events: none; text-align: center;
+        }
+        .gauge-overlay .big { font-size: 2.4rem; font-weight: 700; line-height: 1; }
+        .gauge-overlay .label { color: var(--muted); font-size: 0.75rem; margin-top: 4px; }
+        .empty-state, .error-state {
+            flex: 1; display: flex; flex-direction: column;
+            align-items: center; justify-content: center; text-align: center;
+            color: var(--muted); font-size: 0.9rem; padding: 16px;
+        }
+        .error-state { color: var(--red); }
+        .error-state .detail { color: var(--muted); font-size: 0.75rem; margin-top: 6px; word-break: break-word; }
+        .hidden { display: none !important; }
+    </style>
+</head>
+<body>
+    <header>
+        <h1><span class="dot" aria-hidden="true"></span>Token Fairness — Live Dashboard</h1>
+        <div id="last-updated" aria-live="polite">Connecting…</div>
+    </header>
+
+    <div class="grid">
+        <!-- 1. Budget gauge -->
+        <section class="card" aria-label="Session budget">
+            <h2>Session Budget</h2>
+            <p class="subtitle" id="budget-subtitle">&nbsp;</p>
+            <div class="chart-wrap" id="budget-chart-wrap">
+                <canvas id="budgetGauge"></canvas>
+                <div class="gauge-overlay" id="budget-overlay">
+                    <div class="big" id="budget-pct">—</div>
+                    <div class="label">of session cap</div>
+                </div>
+            </div>
+            <div class="error-state hidden" id="budget-error">
+                <div>Failed to load session budget</div>
+                <div class="detail" id="budget-error-detail"></div>
+            </div>
+        </section>
+
+        <!-- 2. Spend by model -->
+        <section class="card" aria-label="Spend by model">
+            <h2>Spend by Model</h2>
+            <p class="subtitle" id="spend-subtitle">&nbsp;</p>
+            <div class="chart-wrap" id="spend-chart-wrap">
+                <canvas id="spendPie"></canvas>
+            </div>
+            <div class="empty-state hidden" id="spend-empty">No spend recorded yet.</div>
+            <div class="error-state hidden" id="spend-error">
+                <div>Failed to load spend by model</div>
+                <div class="detail" id="spend-error-detail"></div>
+            </div>
+        </section>
+
+        <!-- 3. Guard efficacy -->
+        <section class="card" aria-label="Guard efficacy">
+            <h2>Guard Efficacy</h2>
+            <p class="subtitle" id="efficacy-subtitle">&nbsp;</p>
+            <div class="chart-wrap" id="efficacy-chart-wrap">
+                <canvas id="efficacyBar"></canvas>
+            </div>
+            <div class="error-state hidden" id="efficacy-error">
+                <div>Failed to load guard efficacy</div>
+                <div class="detail" id="efficacy-error-detail"></div>
+            </div>
+        </section>
+
+        <!-- 4. Estimator accuracy -->
+        <section class="card" aria-label="Estimator accuracy">
+            <h2>Estimator Accuracy</h2>
+            <p class="subtitle">Mean absolute percentage error of token estimates</p>
+            <div class="center-stat" id="estimator-stat">
+                <div class="big" id="estimator-mape">—</div>
+                <div class="label">MAPE (lower is better)</div>
+            </div>
+            <div class="error-state hidden" id="estimator-error">
+                <div>Failed to load estimator accuracy</div>
+                <div class="detail" id="estimator-error-detail"></div>
+            </div>
+        </section>
+    </div>
+
+    <script>
+        "use strict";
+
+        // ---- Formatting helpers ----------------------------------------
+        function formatTokens(n) {
+            const num = Number(n) || 0;
+            if (num >= 1e9) return (num / 1e9).toFixed(1) + "B";
+            if (num >= 1e6) return (num / 1e6).toFixed(1) + "M";
+            if (num >= 1e3) return (num / 1e3).toFixed(1) + "K";
+            return String(num);
+        }
+        function clampPct(p) {
+            const v = Number(p);
+            if (!isFinite(v)) return 0;
+            return Math.max(0, Math.min(100, v));
+        }
+        function gaugeColor(pct) {
+            if (pct > 90) return "#f85149";   // red
+            if (pct >= 70) return "#d29922";  // amber
+            return "#2ea043";                 // green
+        }
+
+        // ---- Robust fetch ----------------------------------------------
+        // Resolves to { ok: true, data } or { ok: false, error }.
+        // Treats an HTTP error, a network failure, or a JSON body carrying
+        // an "error" key all as failures.
+        async function fetchJson(url) {
+            try {
+                const res = await fetch(url, { cache: "no-store" });
+                if (!res.ok) {
+                    return { ok: false, error: "HTTP " + res.status };
+                }
+                const data = await res.json();
+                if (data && typeof data === "object" && !Array.isArray(data) && "error" in data) {
+                    return { ok: false, error: String(data.error) };
+                }
+                return { ok: true, data };
+            } catch (e) {
+                return { ok: false, error: (e && e.message) ? e.message : String(e) };
+            }
+        }
+
+        function show(id) { const el = document.getElementById(id); if (el) el.classList.remove("hidden"); }
+        function hide(id) { const el = document.getElementById(id); if (el) el.classList.add("hidden"); }
+        function setText(id, text) { const el = document.getElementById(id); if (el) el.textContent = text; }
+
+        const chartDefaults = {
+            color: "#e6edf3",
+            font: { family: "-apple-system, Segoe UI, Roboto, sans-serif" }
+        };
+        const sliceColors = ["#58a6ff", "#2ea043", "#d29922", "#bc8cff", "#f85149", "#39c5cf", "#ff7b72", "#a5d6ff"];
+
+        let charts = {};
+
+        // ---- 1. Budget gauge -------------------------------------------
+        function initBudgetChart() {
+            const ctx = document.getElementById("budgetGauge").getContext("2d");
+            charts.budget = new Chart(ctx, {
+                type: "doughnut",
+                data: {
+                    labels: ["Spent", "Remaining"],
+                    datasets: [{
+                        data: [0, 100],
+                        backgroundColor: ["#2ea043", "#232b36"],
+                        borderColor: "#171c24",
+                        borderWidth: 2,
+                        circumference: 270,
+                        rotation: 225
+                    }]
+                },
+                options: {
+                    responsive: true,
+                    maintainAspectRatio: false,
+                    cutout: "70%",
+                    plugins: {
+                        legend: { display: false },
+                        tooltip: {
+                            callbacks: {
+                                label: (c) => c.label + ": " + clampPct(c.parsed).toFixed(1) + "%"
+                            }
+                        }
+                    }
+                }
+            });
+        }
+        function updateBudget(result) {
+            if (!result.ok) {
+                hide("budget-chart-wrap");
+                show("budget-error");
+                setText("budget-error-detail", result.error);
+                return;
+            }
+            hide("budget-error"); show("budget-chart-wrap");
+            const d = result.data;
+            const pct = clampPct(d.ceiling_pct);
+            const color = gaugeColor(pct);
+            charts.budget.data.datasets[0].data = [pct, 100 - pct];
+            charts.budget.data.datasets[0].backgroundColor = [color, "#232b36"];
+            charts.budget.update();
+            setText("budget-pct", pct.toFixed(1) + "%");
+            const pctEl = document.getElementById("budget-pct");
+            if (pctEl) pctEl.style.color = color;
+            setText("budget-subtitle",
+                formatTokens(d.current_spend) + " / " + formatTokens(d.session_cap) +
+                " tokens  ·  per-fanout cap " + formatTokens(d.per_fanout_cap));
+        }
+
+        // ---- 2. Spend by model -----------------------------------------
+        function initSpendChart() {
+            const ctx = document.getElementById("spendPie").getContext("2d");
+            charts.spend = new Chart(ctx, {
+                type: "doughnut",
+                data: { labels: [], datasets: [{ data: [], backgroundColor: [], borderColor: "#171c24", borderWidth: 2 }] },
+                options: {
+                    responsive: true,
+                    maintainAspectRatio: false,
+                    cutout: "55%",
+                    plugins: {
+                        legend: { position: "bottom", labels: { color: "#e6edf3", boxWidth: 12, font: { size: 11 } } },
+                        tooltip: {
+                            callbacks: { label: (c) => c.label + ": " + formatTokens(c.parsed) + " tokens" }
+                        }
+                    }
+                }
+            });
+        }
+        function updateSpend(result) {
+            if (!result.ok) {
+                hide("spend-chart-wrap"); hide("spend-empty");
+                show("spend-error"); setText("spend-error-detail", result.error);
+                return;
+            }
+            hide("spend-error");
+            const rows = Array.isArray(result.data) ? result.data : [];
+            // Only count models that actually spent tokens.
+            const spent = rows.filter(r => Number(r.tokens) > 0);
+            if (spent.length === 0) {
+                hide("spend-chart-wrap"); show("spend-empty");
+                setText("spend-subtitle", " ");
+                return;
+            }
+            hide("spend-empty"); show("spend-chart-wrap");
+            const total = spent.reduce((s, r) => s + Number(r.tokens), 0);
+            charts.spend.data.labels = spent.map(r => r.model);
+            charts.spend.data.datasets[0].data = spent.map(r => Number(r.tokens));
+            charts.spend.data.datasets[0].backgroundColor = spent.map((_, i) => sliceColors[i % sliceColors.length]);
+            charts.spend.update();
+            setText("spend-subtitle", formatTokens(total) + " tokens across " + spent.length + " model" + (spent.length === 1 ? "" : "s"));
+        }
+
+        // ---- 3. Guard efficacy -----------------------------------------
+        function initEfficacyChart() {
+            const ctx = document.getElementById("efficacyBar").getContext("2d");
+            charts.efficacy = new Chart(ctx, {
+                type: "bar",
+                data: {
+                    labels: ["Saves", "Blown"],
+                    datasets: [{
+                        label: "Count",
+                        data: [0, 0],
+                        backgroundColor: ["#2ea043", "#f85149"],
+                        borderRadius: 4
+                    }]
+                },
+                options: {
+                    responsive: true,
+                    maintainAspectRatio: false,
+                    plugins: { legend: { display: false } },
+                    scales: {
+                        x: { ticks: { color: "#e6edf3" }, grid: { display: false } },
+                        y: {
+                            beginAtZero: true,
+                            ticks: { color: "#8b98a9", precision: 0 },
+                            grid: { color: "#232b36" }
+                        }
+                    }
+                }
+            });
+        }
+        function updateEfficacy(result) {
+            if (!result.ok) {
+                hide("efficacy-chart-wrap");
+                show("efficacy-error"); setText("efficacy-error-detail", result.error);
+                return;
+            }
+            hide("efficacy-error"); show("efficacy-chart-wrap");
+            const d = result.data;
+            const saves = Number(d.saves_count) || 0;
+            const blown = Number(d.blown_count) || 0;
+            charts.efficacy.data.datasets[0].data = [saves, blown];
+            charts.efficacy.update();
+            const rate = Number(d.save_rate_pct);
+            const rateStr = isFinite(rate) ? rate.toFixed(1) + "%" : "—";
+            setText("efficacy-subtitle",
+                "Save rate " + rateStr + "  ·  " + saves + " saves, " + blown + " blown");
+        }
+
+        // ---- 4. Estimator accuracy -------------------------------------
+        function updateEstimator(result) {
+            if (!result.ok) {
+                hide("estimator-stat");
+                show("estimator-error"); setText("estimator-error-detail", result.error);
+                return;
+            }
+            hide("estimator-error"); show("estimator-stat");
+            const mape = Number(result.data.mean_absolute_percentage_error);
+            setText("estimator-mape", isFinite(mape) ? mape.toFixed(1) + "%" : "—");
+            // Colour the headline by estimate quality: <10% green, <25% amber, else red.
+            const el = document.getElementById("estimator-mape");
+            if (el) {
+                let c = "#8b98a9";
+                if (isFinite(mape)) c = mape < 10 ? "#2ea043" : (mape < 25 ? "#d29922" : "#f85149");
+                el.style.color = c;
+            }
+        }
+
+        // Tracks whether the live WebSocket push is currently connected, so the
+        // "last updated" line can distinguish a live push from a polled refresh.
+        let wsConnected = false;
+
+        // ---- Refresh loop ----------------------------------------------
+        // `live` marks a refresh triggered by a WebSocket push (vs the poll fallback).
+        async function refresh(live) {
+            const [budget, spend, efficacy, estimator] = await Promise.all([
+                fetchJson("/api/session-budget"),
+                fetchJson("/api/spend-by-model"),
+                fetchJson("/api/guard-efficacy"),
+                fetchJson("/api/estimator-accuracy")
+            ]);
+            updateBudget(budget);
+            updateSpend(spend);
+            updateEfficacy(efficacy);
+            updateEstimator(estimator);
+            const now = new Date();
+            const mode = live ? "live" : (wsConnected ? "live" : "polling");
+            setText("last-updated", "Updated " + now.toLocaleTimeString() + " · " + mode);
+        }
+
+        // ---- Live WebSocket push ---------------------------------------
+        // Connect to /ws on the same host/port as the page (works on any interface,
+        // not just localhost). Each pushed line means the journal grew, so we re-fetch
+        // the REST endpoints — which always recompute aggregates from the full ledger —
+        // rather than re-implementing the Rust fold in JS. On drop, auto-reconnect with
+        // a bounded backoff. The 3s poll below stays running as a fallback so the page
+        // never goes stale if WS is unavailable.
+        let wsBackoff = 500;            // ms, doubles up to a cap on repeated failures
+        const WS_BACKOFF_MAX = 10000;   // ms
+
+        function connectWs() {
+            const proto = window.location.protocol === "https:" ? "wss:" : "ws:";
+            const url = proto + "//" + window.location.host + "/ws";
+            let socket;
+            try {
+                socket = new WebSocket(url);
+            } catch (e) {
+                scheduleReconnect();
+                return;
+            }
+            socket.onopen = function () {
+                wsConnected = true;
+                wsBackoff = 500; // reset backoff on a successful connection
+            };
+            socket.onmessage = function () {
+                // A new journal line arrived — pull fresh aggregates immediately.
+                refresh(true);
+            };
+            socket.onclose = function () {
+                wsConnected = false;
+                scheduleReconnect();
+            };
+            socket.onerror = function () {
+                // Let onclose drive the reconnect; just close to be safe.
+                try { socket.close(); } catch (e) { /* ignore */ }
+            };
+        }
+
+        function scheduleReconnect() {
+            const delay = wsBackoff;
+            wsBackoff = Math.min(wsBackoff * 2, WS_BACKOFF_MAX);
+            setTimeout(connectWs, delay);
+        }
+
+        function start() {
+            initBudgetChart();
+            initSpendChart();
+            initEfficacyChart();
+            refresh(false);
+            // Fallback poll: keeps the page fresh even if WS is unavailable. Cheap, so we
+            // leave it running alongside the live push.
+            setInterval(function () { refresh(false); }, 3000);
+            connectWs();
+        }
+
+        if (document.readyState === "loading") {
+            document.addEventListener("DOMContentLoaded", start);
+        } else {
+            start();
+        }
+    </script>
+</body>
+</html>
