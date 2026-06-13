@@ -1,26 +1,36 @@
 //! budget — CORE-A of spend-safety enforcement (doc/design/spend-safety-enforcement.md).
 //!
-//! A self-tracked token budget that needs NO live harness signal (there is none — `tf gate`
-//! returns `no-live-signal` and `session.json` is only written at Stop). It answers ONE
-//! question for the blocking fan-out hook (CORE-B): "is this fan-out allowed to run?".
+//! Answers ONE question for the blocking fan-out hook (CORE-B): "is this fan-out allowed to
+//! run?". The decision is now WINDOW-AWARE (see [`crate::windows`]): instead of a single
+//! cumulative token total that only reset on a manual `tf budget set --reset` — which climbed
+//! across many provider rolling windows and FALSELY locked out a fan-out even when the live
+//! 5-hour window had reset to ~0% — the gate is anchored to the two provider rolling windows:
 //!
-//! Two ceilings, both configurable, both deny-by-refusal (INV-1, INV-2):
-//!   - per_fanout_cap — a single fan-out may not exceed this without an explicit `+Xk` consent
-//!     that RAISES the declared estimate; a fan-out that declares NO budget is refused outright.
-//!   - session_cap   — cumulative spend since the last `tf budget set --reset` baseline may not
-//!     pass this. `spent_since_baseline = max(0, session.json.tokens - baseline_tokens)`.
+//!   - `five_hour` — the 5-hour rolling SESSION window.
+//!   - `seven_day` — the 7-day rolling WEEKLY ("all-models") window.
 //!
-//! `decide` is a PURE function (no IO) so it is exhaustively unit-tested; the dispatch wrappers
-//! are the thin IO layer over `state.rs`.
+//! When a FRESH live snapshot is available the live `used_percentage` is the source of truth
+//! (below the headroom ceiling → unlock; at/over → fail closed). When BLIND, a per-window token
+//! cap with an auto-rebaselining baseline preserves lockout protection without a manual reset.
+//! Per-window token quotas are inferred empirically by the snapshot hook (see [`crate::windows`]).
+//!
+//! The per-fanout cap and the "a Workflow must be armed" invariant (INV-1) are unchanged.
+//! The PURE decision lives in [`crate::windows::decide`]; the wrappers here are the IO layer.
 
-use crate::{state, Out};
+use crate::{state, windows, Out};
 
 /// Conservative starting defaults (tokens). The user tunes these with `tf budget set`; they are
-/// deliberately finite so an unconfigured environment still refuses a runaway fan-out.
+/// deliberately finite so an unconfigured environment still refuses a runaway fan-out. The
+/// 5-hour cap reuses the historical `session_cap_tokens` field (now interpreted PER WINDOW).
 pub const DEFAULT_SESSION_CAP: i64 = 2_000_000;
 pub const DEFAULT_PER_FANOUT_CAP: i64 = 150_000;
+/// Blind-regime fallback cap for the 7-day weekly window (tokens). Generous vs the 5-hour cap.
+pub const DEFAULT_WEEKLY_CAP: i64 = 20_000_000;
 /// Exit code for a DENY verdict (matches the scheduler's 0/3 confidence-branch convention).
 pub const DENY_CODE: i32 = 3;
+/// Max snapshot age (s) the gate accepts as a live signal before falling back to BLIND — the
+/// same default the dispatcher's `tf gate` uses.
+const SNAPSHOT_MAX_AGE: i64 = 900;
 
 fn budget_file() -> String {
     format!("{}/budget.json", state::state_dir())
@@ -30,13 +40,13 @@ fn session_file() -> String {
     format!("{}/session.json", state::state_dir())
 }
 
-/// Cumulative session tokens for the CAP, written by the Stop hook (`session-tokens.sh`); 0 if
-/// absent. Prefers `billable_tokens` (in+out+cache_creation) when present and falls back to the
-/// full `tokens`. Cache-read tokens are ~$0.10/M but dominate the raw count on a long session
-/// (e.g. 71.6M tokens for $61) — counting them made the 2M cap trip at trivial real cost (Issue #2
+/// Cumulative session tokens, written by the Stop hook (`session-tokens.sh`); 0 if absent.
+/// Prefers `billable_tokens` (in+out+cache_creation) when present and falls back to the full
+/// `tokens`. Cache-read tokens are ~$0.10/M but dominate the raw count on a long session (e.g.
+/// 71.6M tokens for $61) — counting them made the cap trip at trivial real cost (Issue #2
 /// follow-up). The cap therefore tracks the EXPENSIVE tokens; `tokens`/`usd` stay full for
-/// spend-audit and convergence.
-fn session_tokens() -> i64 {
+/// spend-audit and convergence. `pub` so the snapshot hook samples the SAME basis the cap reads.
+pub fn session_tokens() -> i64 {
     match state::read_json(&session_file()) {
         Some(v) => {
             let bill = state::int(&v, "billable_tokens", -1);
@@ -50,37 +60,34 @@ fn session_tokens() -> i64 {
     }
 }
 
-/// (session_cap, per_fanout_cap, baseline_tokens) from budget.json, else the defaults.
-fn load_cfg() -> (i64, i64, i64) {
-    match state::read_json(&budget_file()) {
-        Some(v) => (
-            state::int(&v, "session_cap_tokens", DEFAULT_SESSION_CAP),
-            state::int(&v, "per_fanout_cap_tokens", DEFAULT_PER_FANOUT_CAP),
-            state::int(&v, "baseline_tokens", 0),
-        ),
-        None => (DEFAULT_SESSION_CAP, DEFAULT_PER_FANOUT_CAP, 0),
-    }
-}
-
-/// THE enforcement decision — pure. `est` is the fan-out's declared token estimate (its `+Xk`).
-/// Returns (allowed, reason). A non-positive `est` means "no budget declared" → refused (INV-1):
-/// the whole failure was a fan-out launched with no `budget.total`.
-pub fn decide(
+/// The budget configuration (from budget.json, else defaults).
+struct Cfg {
+    /// Per 5-hour-window token cap (blind regime); historical `session_cap_tokens` field.
     session_cap: i64,
     per_fanout_cap: i64,
-    spent_since_baseline: i64,
-    est: i64,
-) -> (bool, &'static str) {
-    if est <= 0 {
-        return (false, "no-budget-declared");
+    /// Legacy manual `--reset` baseline — retained for the back-compat `status`/`spent` fields.
+    baseline: i64,
+    headroom: i64,
+    weekly_cap: i64,
+}
+
+fn load_cfg() -> Cfg {
+    match state::read_json(&budget_file()) {
+        Some(v) => Cfg {
+            session_cap: state::int(&v, "session_cap_tokens", DEFAULT_SESSION_CAP),
+            per_fanout_cap: state::int(&v, "per_fanout_cap_tokens", DEFAULT_PER_FANOUT_CAP),
+            baseline: state::int(&v, "baseline_tokens", 0),
+            headroom: state::int(&v, "headroom_pct", windows::DEFAULT_HEADROOM),
+            weekly_cap: state::int(&v, "weekly_cap_tokens", DEFAULT_WEEKLY_CAP),
+        },
+        None => Cfg {
+            session_cap: DEFAULT_SESSION_CAP,
+            per_fanout_cap: DEFAULT_PER_FANOUT_CAP,
+            baseline: 0,
+            headroom: windows::DEFAULT_HEADROOM,
+            weekly_cap: DEFAULT_WEEKLY_CAP,
+        },
     }
-    if est > per_fanout_cap {
-        return (false, "exceeds-per-fanout-cap");
-    }
-    if spent_since_baseline.saturating_add(est) > session_cap {
-        return (false, "exceeds-session-cap");
-    }
-    (true, "ok")
 }
 
 /// PURE: spend since a baseline, distrusting a STALE baseline. A baseline GREATER than the current
@@ -88,7 +95,8 @@ pub fn decide(
 /// `.tokens` but the cap now reads the smaller `billable_tokens` — or the session counter was
 /// reset/compacted. In that case `cur - baseline` would go negative and `.max(0)` would silently
 /// report ZERO consumed, disabling the cap. Instead count the full current reading (fail toward
-/// enforcement). When the baseline is valid (`cur >= baseline`) this is the plain delta.
+/// enforcement). When the baseline is valid (`cur >= baseline`) this is the plain delta. `pub` so
+/// the window core ([`crate::windows::spent_in_window`]) shares the exact same guard.
 pub fn spent_from(cur: i64, baseline: i64) -> i64 {
     if cur >= baseline {
         cur - baseline
@@ -111,37 +119,54 @@ fn read_arm() -> Option<i64> {
     state::read_json(&arm_file()).map(|v| state::int(&v, "est", 0))
 }
 
-/// PURE: the blocking-hook decision for a PreToolUse on a spawn tool. None = allow, Some = deny
-/// reason. `Workflow` is always a fan-out → it must be ARMED within caps; `Agent`/`Task` are
-/// allowed until the session cap is reached (so ordinary single-agent work is never bricked).
-pub fn gate_spend(
-    tool: &str,
-    armed: Option<i64>,
-    session_cap: i64,
-    per_fanout_cap: i64,
-    spent: i64,
-) -> Option<String> {
+/// The IO wrapper around the pure [`crate::windows::decide`]: load config + current tokens +
+/// per-window state + the (possibly stale) live snapshot, then decide for `est`.
+fn windowed_decide(est: i64) -> (bool, String) {
+    let cfg = load_cfg();
+    let cur = session_tokens();
+    let (five, seven) = windows::load();
+    let (l5, l7) = windows::live_windows(SNAPSHOT_MAX_AGE);
+    let views = [
+        (
+            "5h",
+            windows::WinView {
+                state: five,
+                live: l5,
+                blind_cap: cfg.session_cap,
+            },
+        ),
+        (
+            "weekly",
+            windows::WinView {
+                state: seven,
+                live: l7,
+                blind_cap: cfg.weekly_cap,
+            },
+        ),
+    ];
+    windows::decide(&views, cur, est, cfg.per_fanout_cap, cfg.headroom)
+}
+
+/// The blocking-hook decision for a PreToolUse on a spawn tool. None = allow, Some = deny reason.
+/// `Workflow` is always a fan-out → it must be ARMED, then cleared by the window-aware decision;
+/// `Agent`/`Task` declare no budget and are gated only against window FULLNESS (a nominal est), so
+/// ordinary single-agent work is never bricked while there is allocation available.
+pub fn gate_spend(tool: &str, armed: Option<i64>) -> Option<String> {
     match tool {
         "Workflow" => match armed {
             None => Some(
                 "fan-out has no declared budget — run `tf budget arm <est>` (your +Xk) first"
                     .into(),
             ),
-            Some(est) => match decide(session_cap, per_fanout_cap, spent, est) {
+            Some(est) => match windowed_decide(est) {
                 (true, _) => None,
                 (false, reason) => Some(format!("fan-out budget refused: {}", reason)),
             },
         },
-        "Agent" | "Task" => {
-            if spent >= session_cap {
-                Some(format!(
-                    "session token cap reached ({}/{}). Raise with `tf budget set --session-cap` or `--reset`.",
-                    spent, session_cap
-                ))
-            } else {
-                None
-            }
-        }
+        "Agent" | "Task" => match windowed_decide(windows::SINGLE_AGENT_EST) {
+            (true, _) => None,
+            (false, reason) => Some(format!("token window blocked: {}", reason)),
+        },
         _ => None,
     }
 }
@@ -154,18 +179,20 @@ pub fn preflight_spend(payload: &str) -> Out {
     }
     let v: serde_json::Value = serde_json::from_str(payload).unwrap_or(serde_json::Value::Null);
     let tool = v.get("tool_name").and_then(|x| x.as_str()).unwrap_or("");
-    let (session_cap, per_fanout_cap, baseline) = load_cfg();
-    let spent = spent_since(baseline);
     let armed = read_arm();
     let est = armed.unwrap_or(0);
-    if let Some(reason) = gate_spend(tool, armed, session_cap, per_fanout_cap, spent) {
+    if let Some(reason) = gate_spend(tool, armed) {
         // Capture the deny for the Honesty Observatory (P-I) — SAVES + procedural denies + friction.
         crate::observe::log_gate(tool, "deny", &reason, est);
+        let human = format!(
+            "{}. The live 5-hour and weekly rolling windows gate spend now — this unlocks automatically when the window resets.",
+            reason
+        );
         let deny = serde_json::json!({
             "hookSpecificOutput": {
                 "hookEventName": "PreToolUse",
                 "permissionDecision": "deny",
-                "permissionDecisionReason": reason
+                "permissionDecisionReason": human
             }
         });
         return Out::ok(serde_json::to_string(&deny).unwrap_or_default() + "\n");
@@ -199,29 +226,58 @@ fn has(argv: &[String], key: &str) -> bool {
         .any(|a| a == &pfx || a.starts_with(&format!("{}=", pfx)))
 }
 
+/// Per-window display object for `tf budget status`.
+fn win_disp(st: &windows::WinSt, live: Option<f64>, cap: i64, headroom: i64, cur: i64) -> serde_json::Value {
+    let spent_w = windows::spent_in_window(cur, st.baseline_tokens);
+    let remaining_w = match live {
+        Some(u) if st.quota_tokens > 0 => windows::remaining(st.quota_tokens, u, headroom),
+        _ => (cap - spent_w).max(0),
+    };
+    serde_json::json!({
+        "used_pct": live,
+        "resets_at": st.seen_resets_at,
+        "quota_tokens": st.quota_tokens,
+        "samples": st.samples,
+        "spent_in_window": spent_w,
+        "remaining_tokens": remaining_w,
+        "fresh": live.is_some(),
+    })
+}
+
 pub fn dispatch(argv: &[String]) -> Out {
     let sub = argv.first().map(|s| s.as_str()).unwrap_or("status");
     let rest = if argv.is_empty() { &[][..] } else { &argv[1..] };
 
     match sub {
-        // tf budget set [--session-cap N] [--per-fanout-cap N] [--reset]
+        // tf budget set [--session-cap/--five-hour-cap N] [--per-fanout-cap N] [--weekly-cap N]
+        //               [--headroom N] [--reset]
         "set" => {
-            let (cur_session, cur_fanout, cur_baseline) = load_cfg();
-            let session_cap = flag(rest, "session-cap")
-                .map(|s| state::digits_or(s, cur_session))
-                .unwrap_or(cur_session);
+            let cur = load_cfg();
+            // `--five-hour-cap` is an alias for the historical `--session-cap`.
+            let session_cap = flag(rest, "five-hour-cap")
+                .or_else(|| flag(rest, "session-cap"))
+                .map(|s| state::digits_or(s, cur.session_cap))
+                .unwrap_or(cur.session_cap);
             let per_fanout_cap = flag(rest, "per-fanout-cap")
-                .map(|s| state::digits_or(s, cur_fanout))
-                .unwrap_or(cur_fanout);
-            // --reset re-baselines spent-since to the current cumulative session total.
+                .map(|s| state::digits_or(s, cur.per_fanout_cap))
+                .unwrap_or(cur.per_fanout_cap);
+            let weekly_cap = flag(rest, "weekly-cap")
+                .map(|s| state::digits_or(s, cur.weekly_cap))
+                .unwrap_or(cur.weekly_cap);
+            let headroom = flag(rest, "headroom")
+                .map(|s| state::digits_or(s, cur.headroom))
+                .unwrap_or(cur.headroom);
+            // --reset re-baselines the legacy spent-since to the current cumulative session total.
             let baseline = if has(rest, "reset") {
                 session_tokens()
             } else {
-                cur_baseline
+                cur.baseline
             };
             let doc = serde_json::json!({
                 "session_cap_tokens": session_cap,
                 "per_fanout_cap_tokens": per_fanout_cap,
+                "weekly_cap_tokens": weekly_cap,
+                "headroom_pct": headroom,
                 "baseline_tokens": baseline,
                 "set_at": state::now_epoch(),
             });
@@ -229,51 +285,56 @@ pub fn dispatch(argv: &[String]) -> Out {
                 return Out::err(format!("budget: cannot write {}", budget_file()), 2);
             }
             Out::ok(format!(
-                "{{\"session_cap_tokens\":{},\"per_fanout_cap_tokens\":{},\"baseline_tokens\":{}}}\n",
-                session_cap, per_fanout_cap, baseline
+                "{{\"session_cap_tokens\":{},\"per_fanout_cap_tokens\":{},\"weekly_cap_tokens\":{},\"headroom_pct\":{},\"baseline_tokens\":{}}}\n",
+                session_cap, per_fanout_cap, weekly_cap, headroom, baseline
             ))
         }
 
-        // tf budget status — the human/machine view of the current ceiling.
+        // tf budget status — the human/machine view: legacy cumulative fields + per-window state.
         "status" => {
-            let (session_cap, per_fanout_cap, baseline) = load_cfg();
-            let spent = spent_since(baseline);
-            let remaining = (session_cap - spent).max(0);
+            let cfg = load_cfg();
+            let spent = spent_since(cfg.baseline);
+            let remaining = (cfg.session_cap - spent).max(0);
+            let cur = session_tokens();
+            let (five, seven) = windows::load();
+            let (l5, l7) = windows::live_windows(SNAPSHOT_MAX_AGE);
+            let win_doc = serde_json::json!({
+                "five_hour": win_disp(&five, l5, cfg.session_cap, cfg.headroom, cur),
+                "seven_day": win_disp(&seven, l7, cfg.weekly_cap, cfg.headroom, cur),
+            });
             Out::ok(format!(
-                "{{\"session_cap_tokens\":{},\"per_fanout_cap_tokens\":{},\"baseline_tokens\":{},\"session_spent\":{},\"session_remaining\":{}}}\n",
-                session_cap, per_fanout_cap, baseline, spent, remaining
+                "{{\"session_cap_tokens\":{},\"per_fanout_cap_tokens\":{},\"weekly_cap_tokens\":{},\"headroom_pct\":{},\"baseline_tokens\":{},\"session_spent\":{},\"session_remaining\":{},\"windows\":{}}}\n",
+                cfg.session_cap, cfg.per_fanout_cap, cfg.weekly_cap, cfg.headroom, cfg.baseline, spent, remaining,
+                serde_json::to_string(&win_doc).unwrap_or_else(|_| "{}".into())
             ))
         }
 
-        // tf budget spent — just the cumulative-since-baseline number.
+        // tf budget spent — just the legacy cumulative-since-baseline number.
         "spent" => {
-            let (_, _, baseline) = load_cfg();
-            Out::ok(format!("{}\n", spent_since(baseline)))
+            let cfg = load_cfg();
+            Out::ok(format!("{}\n", spent_since(cfg.baseline)))
         }
 
         // tf budget check <est> — THE gate the blocking hook calls. Exit 0 = OK, DENY_CODE = refuse.
+        // Window-aware: a fresh live window with headroom clears it even when the legacy cumulative
+        // total is large (the fix), while an at-ceiling / blind-cap-exhausted window refuses.
         "check" => {
             let est = state::digits_or(rest.first().map(|s| s.as_str()).unwrap_or(""), 0);
-            let (session_cap, per_fanout_cap, baseline) = load_cfg();
-            let spent = spent_since(baseline);
-            let (ok, reason) = decide(session_cap, per_fanout_cap, spent, est);
+            let (ok, reason) = windowed_decide(est);
             let line = format!(
-                "{{\"decision\":\"{}\",\"reason\":\"{}\",\"est\":{},\"per_fanout_cap\":{},\"session_spent\":{},\"session_remaining\":{}}}\n",
+                "{{\"decision\":\"{}\",\"reason\":\"{}\",\"est\":{}}}\n",
                 if ok { "OK" } else { "DENY" },
                 reason,
                 est,
-                per_fanout_cap,
-                spent,
-                (session_cap - spent).max(0),
             );
             Out::line(line, if ok { 0 } else { DENY_CODE })
         }
 
-        // tf budget arm <est> — declare a fan-out's budget (its +Xk). Refuses to arm an over-cap est.
+        // tf budget arm <est> — declare a fan-out's budget (its +Xk). Refuses an est the
+        // window-aware gate would not currently allow.
         "arm" => {
             let est = state::digits_or(rest.first().map(|s| s.as_str()).unwrap_or(""), 0);
-            let (session_cap, per_fanout_cap, baseline) = load_cfg();
-            let (ok, reason) = decide(session_cap, per_fanout_cap, spent_since(baseline), est);
+            let (ok, reason) = windowed_decide(est);
             if !ok {
                 return Out::line(
                     format!("{{\"armed\":false,\"reason\":\"{}\",\"est\":{}}}\n", reason, est),
@@ -294,7 +355,7 @@ pub fn dispatch(argv: &[String]) -> Out {
         }
 
         _ => Out::err(
-            "usage: tf budget {set [--session-cap N] [--per-fanout-cap N] [--reset]|status|spent|check <est>|arm <est>|disarm}",
+            "usage: tf budget {set [--five-hour-cap N] [--per-fanout-cap N] [--weekly-cap N] [--headroom N] [--reset]|status|spent|check <est>|arm <est>|disarm}",
             2,
         ),
     }
@@ -303,6 +364,7 @@ pub fn dispatch(argv: &[String]) -> Out {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::testutil::{temp_dir, ENV_LOCK};
 
     #[test]
     fn spent_from_distrusts_a_stale_larger_baseline() {
@@ -316,82 +378,133 @@ mod tests {
     }
 
     #[test]
-    fn no_declared_budget_is_refused() {
-        // INV-1: the exact failure — a fan-out with no budget.total.
-        assert!(!decide(2_000_000, 150_000, 0, 0).0);
-        assert_eq!(decide(2_000_000, 150_000, 0, 0).1, "no-budget-declared");
-        assert_eq!(decide(2_000_000, 150_000, 0, -5).1, "no-budget-declared");
-    }
-
-    #[test]
-    fn within_both_caps_is_allowed() {
-        assert_eq!(decide(2_000_000, 150_000, 100_000, 120_000), (true, "ok"));
-    }
-
-    #[test]
-    fn over_per_fanout_cap_is_refused() {
-        // The 605k runaway: a single fan-out far over the per-fanout ceiling.
-        assert_eq!(
-            decide(2_000_000, 150_000, 0, 605_000),
-            (false, "exceeds-per-fanout-cap")
-        );
-    }
-
-    #[test]
-    fn over_session_cap_is_refused_even_if_per_fanout_ok() {
-        // est within per-fanout cap, but cumulative would breach the session ceiling.
-        assert_eq!(
-            decide(500_000, 150_000, 400_000, 140_000),
-            (false, "exceeds-session-cap")
-        );
-    }
-
-    #[test]
-    fn exactly_at_caps_is_allowed_just_over_is_not() {
-        assert_eq!(decide(1_000, 1_000, 0, 1_000), (true, "ok")); // est == per_fanout_cap, spent+est == session_cap
-        assert_eq!(
-            decide(1_000, 1_000, 1, 1_000),
-            (false, "exceeds-session-cap")
-        ); // one token over
-        assert_eq!(
-            decide(10_000, 1_000, 0, 1_001),
-            (false, "exceeds-per-fanout-cap")
-        );
-    }
-
-    #[test]
-    fn saturating_add_does_not_overflow() {
-        assert!(decide(i64::MAX, i64::MAX, i64::MAX, i64::MAX).0);
-    }
-
-    #[test]
     fn workflow_without_arm_is_denied() {
         // INV-1, structural: a Workflow fan-out with no declared budget — the incident.
-        assert!(gate_spend("Workflow", None, 2_000_000, 150_000, 0).is_some());
-    }
-
-    #[test]
-    fn workflow_armed_within_caps_is_allowed() {
-        assert!(gate_spend("Workflow", Some(120_000), 2_000_000, 150_000, 0).is_none());
-    }
-
-    #[test]
-    fn workflow_armed_over_cap_is_denied() {
-        // The 605k runaway, even if someone armed it.
-        assert!(gate_spend("Workflow", Some(605_000), 2_000_000, 150_000, 0).is_some());
-    }
-
-    #[test]
-    fn single_agent_allowed_until_session_cap() {
-        // Ordinary single-agent work must NOT be bricked — only blocked once over the session cap.
-        assert!(gate_spend("Agent", None, 1_000, 150_000, 999).is_none());
-        assert!(gate_spend("Agent", None, 1_000, 150_000, 1_000).is_some());
-        assert!(gate_spend("Task", None, 1_000, 150_000, 1_000).is_some());
+        assert!(gate_spend("Workflow", None).is_some());
     }
 
     #[test]
     fn non_spawn_tools_are_never_gated() {
-        assert!(gate_spend("Read", None, 0, 0, 999_999).is_none());
-        assert!(gate_spend("Bash", Some(0), 0, 0, 999_999).is_none());
+        assert!(gate_spend("Read", None).is_none());
+        assert!(gate_spend("Bash", Some(0)).is_none());
+    }
+
+    /// Lay down a state dir with a fresh snapshot + a big cumulative session.json + an arm.
+    fn scenario(tag: &str, five_pct: f64, seven_pct: f64) -> std::path::PathBuf {
+        let dir = temp_dir(tag);
+        std::env::set_var("I2P_COST_STATE_DIR", &dir);
+        std::env::set_var("I2P_RATELIMIT_SNAPSHOT", dir.join("snap.json"));
+        std::env::set_var("I2P_HONESTY_EVENTS", dir.join("ev.jsonl"));
+        std::env::set_var("I2P_CLOCK", "2000");
+        std::fs::write(dir.join("session.json"), r#"{"billable_tokens":90000000}"#).unwrap();
+        std::fs::write(
+            dir.join("snap.json"),
+            format!(
+                r#"{{"captured_at":1990,"rate_limits":{{"five_hour":{{"used_percentage":{},"resets_at":1800000000}},"seven_day":{{"used_percentage":{},"resets_at":1800500000}}}}}}"#,
+                five_pct, seven_pct
+            ),
+        )
+        .unwrap();
+        std::fs::write(dir.join("fanout-arm.json"), r#"{"est":120000}"#).unwrap();
+        dir
+    }
+
+    fn clear_env() {
+        for k in [
+            "I2P_COST_STATE_DIR",
+            "I2P_RATELIMIT_SNAPSHOT",
+            "I2P_HONESTY_EVENTS",
+            "I2P_CLOCK",
+        ] {
+            std::env::remove_var(k);
+        }
+    }
+
+    #[test]
+    fn preflight_spend_unlocks_when_live_window_is_empty() {
+        let _g = ENV_LOCK.lock().unwrap();
+        // THE reported bug: cumulative tokens are huge (90M) but the live 5h window is at 1% and
+        // the weekly at 3% — plenty of allocation. The gate must ALLOW (empty output, no deny).
+        let dir = scenario("budget-unlock", 1.0, 3.0);
+        let out = preflight_spend(r#"{"tool_name":"Workflow"}"#);
+        clear_env();
+        assert!(
+            out.stdout.is_empty(),
+            "expected ALLOW (no deny JSON), got: {}",
+            out.stdout
+        );
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn dispatch_set_status_check_arm_roundtrip() {
+        let _g = ENV_LOCK.lock().unwrap();
+        let dir = temp_dir("budget-dispatch");
+        std::env::set_var("I2P_COST_STATE_DIR", &dir);
+        std::env::set_var("I2P_RATELIMIT_SNAPSHOT", dir.join("snap.json"));
+        std::env::set_var("I2P_HONESTY_EVENTS", dir.join("ev.jsonl"));
+        std::env::set_var("I2P_CLOCK", "2000");
+        // A fresh window with headroom so the window-aware check/arm clear.
+        std::fs::write(
+            dir.join("snap.json"),
+            r#"{"captured_at":1990,"rate_limits":{"five_hour":{"used_percentage":4.0,"resets_at":1800000000},"seven_day":{"used_percentage":1.0,"resets_at":1800500000}}}"#,
+        )
+        .unwrap();
+
+        let s = |args: &[&str]| {
+            dispatch(&args.iter().map(|a| a.to_string()).collect::<Vec<_>>())
+        };
+
+        // set persists all five fields (incl. the --five-hour-cap alias + new flags).
+        let set = s(&["set", "--five-hour-cap", "3000000", "--weekly-cap", "30000000", "--headroom", "20"]);
+        assert!(set.stdout.contains("\"session_cap_tokens\":3000000"));
+        assert!(set.stdout.contains("\"weekly_cap_tokens\":30000000"));
+        assert!(set.stdout.contains("\"headroom_pct\":20"));
+
+        // status surfaces the per-window object built from the fresh snapshot.
+        let status = s(&["status"]);
+        assert!(status.stdout.contains("\"windows\""));
+        assert!(status.stdout.contains("\"used_pct\":4.0"));
+
+        // check within caps + fresh headroom ⇒ OK exit 0; arm records it.
+        let chk = s(&["check", "120000"]);
+        assert_eq!(chk.code, 0);
+        assert!(chk.stdout.contains("\"decision\":\"OK\""));
+        let arm = s(&["arm", "120000"]);
+        assert!(arm.stdout.contains("\"armed\":true"));
+        assert!(read_arm().is_some());
+
+        // an over-per-fanout-cap est is refused at check and arm (exit DENY_CODE).
+        let over = s(&["check", "999999"]);
+        assert_eq!(over.code, DENY_CODE);
+        assert!(over.stdout.contains("exceeds-per-fanout-cap"));
+
+        // disarm clears the one-shot arm.
+        s(&["disarm"]);
+        assert!(read_arm().is_none());
+
+        // unknown subcommand → usage on stderr, exit 2.
+        assert_eq!(s(&["wat"]).code, 2);
+
+        for k in ["I2P_COST_STATE_DIR", "I2P_RATELIMIT_SNAPSHOT", "I2P_HONESTY_EVENTS", "I2P_CLOCK"] {
+            std::env::remove_var(k);
+        }
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn preflight_spend_denies_when_live_window_at_ceiling() {
+        let _g = ENV_LOCK.lock().unwrap();
+        // 5h window at 95% ⇒ near lockout ⇒ fail closed even though weekly is clear.
+        let dir = scenario("budget-ceiling", 95.0, 3.0);
+        let out = preflight_spend(r#"{"tool_name":"Workflow"}"#);
+        clear_env();
+        assert!(out.stdout.contains("\"permissionDecision\":\"deny\""));
+        assert!(
+            out.stdout.contains("5h-window-at-ceiling"),
+            "deny should name the window, got: {}",
+            out.stdout
+        );
+        std::fs::remove_dir_all(&dir).ok();
     }
 }
