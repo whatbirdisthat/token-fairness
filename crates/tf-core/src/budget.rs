@@ -83,8 +83,22 @@ pub fn decide(
     (true, "ok")
 }
 
+/// PURE: spend since a baseline, distrusting a STALE baseline. A baseline GREATER than the current
+/// reading means it was captured under a different basis — a pre-0.1.1 `--reset` stored full
+/// `.tokens` but the cap now reads the smaller `billable_tokens` — or the session counter was
+/// reset/compacted. In that case `cur - baseline` would go negative and `.max(0)` would silently
+/// report ZERO consumed, disabling the cap. Instead count the full current reading (fail toward
+/// enforcement). When the baseline is valid (`cur >= baseline`) this is the plain delta.
+pub fn spent_from(cur: i64, baseline: i64) -> i64 {
+    if cur >= baseline {
+        cur - baseline
+    } else {
+        cur
+    }
+}
+
 fn spent_since(baseline: i64) -> i64 {
-    (session_tokens() - baseline).max(0)
+    spent_from(session_tokens(), baseline)
 }
 
 /// One-shot record that a fan-out's budget has been declared+approved (its `+Xk`). The blocking
@@ -142,8 +156,9 @@ pub fn preflight_spend(payload: &str) -> Out {
     let tool = v.get("tool_name").and_then(|x| x.as_str()).unwrap_or("");
     let (session_cap, per_fanout_cap, baseline) = load_cfg();
     let spent = spent_since(baseline);
-    let est = read_arm().unwrap_or(0);
-    if let Some(reason) = gate_spend(tool, read_arm(), session_cap, per_fanout_cap, spent) {
+    let armed = read_arm();
+    let est = armed.unwrap_or(0);
+    if let Some(reason) = gate_spend(tool, armed, session_cap, per_fanout_cap, spent) {
         // Capture the deny for the Honesty Observatory (P-I) — SAVES + procedural denies + friction.
         crate::observe::log_gate(tool, "deny", &reason, est);
         let deny = serde_json::json!({
@@ -288,6 +303,17 @@ pub fn dispatch(argv: &[String]) -> Out {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn spent_from_distrusts_a_stale_larger_baseline() {
+        // Valid baseline → plain delta.
+        assert_eq!(spent_from(1_800_000, 1_000_000), 800_000);
+        assert_eq!(spent_from(1_000_000, 1_000_000), 0);
+        // STALE baseline (Issue #2 follow-up): a pre-0.1.1 `--reset` stored full .tokens (71.6M);
+        // the cap now reads the smaller billable_tokens (1.8M). Old code: max(0, 1.8M-71.6M)=0 →
+        // cap silently disabled. New: count the full current reading → cap stays live.
+        assert_eq!(spent_from(1_800_000, 71_600_673), 1_800_000);
+    }
 
     #[test]
     fn no_declared_budget_is_refused() {

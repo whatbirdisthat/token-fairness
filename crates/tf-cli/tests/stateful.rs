@@ -1028,3 +1028,37 @@ fn doctor_ready_and_breached() {
     );
     let _ = std::fs::remove_dir_all(&d);
 }
+
+#[test]
+fn plan_close_empty_actual_errors_not_silent_null() {
+    // Issue #2 review (CORRECTNESS MEDIUM): a present-but-empty --actual must FAIL, not masquerade
+    // as a clean convergence:null close that silently folds no sample.
+    let d = tmp("planemptyactual");
+    let sess = d.join("s.json");
+    let pop = d.join("po.json");
+    let cal = d.join("c.json");
+    let env = [
+        ("I2P_SESSION_FILE", sess.to_str().unwrap()),
+        ("I2P_PLANOPEN_FILE", pop.to_str().unwrap()),
+        ("I2P_CALIBRATION_FILE", cal.to_str().unwrap()),
+    ];
+    std::fs::write(&sess, r#"{"tokens":0}"#).unwrap();
+    line(
+        &["plan-open", "large", "400000"],
+        "",
+        &env,
+        r#"{"opened":"plan:large","est":400000,"baseline_tokens":0}"#,
+        0,
+    );
+    // --actual with no value (or a failed $(…) substitution) → exit 2, no convergence folded.
+    line(
+        &["plan-close", "--actual"],
+        "",
+        &env,
+        r#"{"error":"actual-required","hint":"--actual needs a positive measured token count (e.g. from `tf spend`)"}"#,
+        2,
+    );
+    // plan-open file is left intact so the operator can retry with a real --actual.
+    assert!(pop.exists());
+    let _ = std::fs::remove_dir_all(&d);
+}

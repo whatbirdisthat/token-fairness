@@ -134,7 +134,11 @@ pub fn dispatch(argv: &[String]) -> Out {
                 .get("budget_total")
                 .and_then(|x| x.as_i64())
                 .unwrap_or(0);
-            let _ = state::write_json(&lf, &root);
+            // Fail loud if the durable write fails — else the next call re-reads the old spent and
+            // under-counts against the cap (the verdict would diverge from persisted state).
+            if state::write_json(&lf, &root).is_err() {
+                return Out::err(format!("job-ledger: cannot write {}", lf), 2);
+            }
             let halt = budget > 0 && spent >= budget;
             Out::line(
                 format!(

@@ -300,13 +300,22 @@ pub fn plan_close(argv: &[String]) -> Out {
     // counts only the MAIN transcript, so a fan-out's subagent tokens are invisible (actual:0,
     // convergence dead). The orchestrator passes the ground truth from `tf spend` (CORE-C, which
     // reconciles every subagent/workflow transcript). No flag → the legacy session-delta, exact.
-    let mut actual = match flags.get("actual") {
-        Some(a) => state::digits_or(a, 0),
+    let actual = match flags.get("actual") {
+        // A present-but-empty/non-numeric `--actual` (shell word-splitting, a failed
+        // `$(tf spend …)` substitution) must NOT masquerade as a clean `convergence:null` close —
+        // that silently folds no sample while looking successful. Fail loud instead.
+        Some(a) => {
+            let n = state::digits_or(a, 0);
+            if n <= 0 {
+                return Out::line(
+                    "{\"error\":\"actual-required\",\"hint\":\"--actual needs a positive measured token count (e.g. from `tf spend`)\"}\n".to_string(),
+                    2,
+                );
+            }
+            n
+        }
         None => (cur - base).max(0),
     };
-    if actual < 0 {
-        actual = 0;
-    }
     // §3.4: convergence dies silently if the session-token writer never ran. Warn, don't hide it.
     if base == 0 && cur == 0 && !flags.contains_key("actual") {
         eprintln!("scheduler: plan-close sees baseline==current==0 — the session.json .tokens writer may not be installed; convergence cannot advance.");

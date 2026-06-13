@@ -1,0 +1,3 @@
+- [Spend-safety review lens](project_spend-safety-review-lens.md) — how to adversarially review tf's fail-closed guard model (INV-1..5, L1/L2/L3, CORE-A/B/C).
+- [Dual session_tokens() functions](project_dual-session-tokens.md) — budget.rs (CAP, reads billable_tokens) vs scheduler.rs (convergence, reads .tokens); never conflate when reviewing cap/convergence changes.
+- [Budget baseline unit-migration hazard](budget-baseline-unit-migration.md) — 0.1.1 cap reads billable_tokens but a 0.1.0 baseline_tokens is full-token units; mixed-unit subtraction collapses spent_since to 0 across upgrade.

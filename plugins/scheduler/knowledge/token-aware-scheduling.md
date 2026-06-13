@@ -33,7 +33,7 @@ never guard on a stale or wrong-metric proxy again.
 |---|---|---|
 | **L0 Pre-flight estimate** | `tf estimate`, `tf calibrate` | Predict cost before fanning out; if confidence is LOW, probe one unit and re-estimate. |
 | **L1 Live ceiling guard** | `tf ceiling-check` (via `tf gate`) | Halt the next wave when a live window reaches `100 − headroom`. Pure, deterministic, **fails closed**. |
-| **L2 Hard budget cap** | Workflow `budget` API (`+Xk`) | A wide fan-out **refuses to run** without an explicit `+Xk` directive; the budget is a physical ceiling. |
+| **L2 Hard budget cap** | `tf budget` (`arm`/`check` + `preflight-spend`); ledger `budget_total` via `tf ledger spend` | A wide fan-out **refuses to run** without an enforceable cap — the **signal-INDEPENDENT** `tf budget arm` (its `+Xk`), NOT the Workflow `budget.*` API (which was null in the Issue #2 incident — see "Empirically verified"). |
 | **L3 Off-peak scheduler** | `tf offpeak-window`, `tf offpeak-budget` | Run unattended in the quiet hours; reserve a morning allowance from the login-time answer. |
 | **L4 Cheap resume** | `tf ledger` | Resume does only what's LEFT — never re-derive context or re-fan the whole job. |
 
@@ -109,12 +109,15 @@ cron that does *not* meet all four conditions may only **alert** (read `checkpoi
 
 ## Empirically verified (Issue #2, the 987k-token Workflow fan-out probe — 2026-06-13)
 
-A real 24-agent Workflow fan-out answered three of the four open questions. The findings, and what
-they mean now:
+A real 30-agent Workflow fan-out (24 was the baseline plan) gave evidence on the four open questions.
+**Caveat: this is ONE run, and the session may not have delivered `.rate_limits` to *any* surface —
+so the findings below inform but do not prove the general case** (the same over-correction the
+Reconciliation section warns against). The findings, and what they mean now:
 
-1. **Does a `PreToolUse`(`Agent`/`Task`) hook receive `.rate_limits`?** **No** — the gate was blind
-   (`no-live-signal`) throughout. So L1 cannot be the backstop. → The **CORE-A budget cap**
-   (`tf budget`, signal-INDEPENDENT) is the primary guard; the snapshot bridge is best-effort.
+1. **Does a `PreToolUse`(`Agent`/`Task`) hook receive `.rate_limits`?** In this run, **no** — the gate
+   was blind (`no-live-signal`) throughout. Whether the hook even *fires* inside a Workflow is the
+   residual unknown (probe with `tf verify-payload`). Either way we don't lean on L1 here → the
+   **CORE-A budget cap** (`tf budget`, signal-INDEPENDENT) is the primary guard; snapshot is best-effort.
 2. **Do subagents receive the live payload / move `session.json`?** **No** — subagent tokens are
    invisible to the main-session counter. → Convergence must be fed a **measured** actual:
    `tf plan-close --actual $(tf spend …)` (the session-delta path stays for single-agent work).

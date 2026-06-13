@@ -60,9 +60,14 @@ cap until it is one of these** (Issue #2: a UI-selected "+400k" enforced nothing
 2.47×). Establish an enforceable cap *before wave 1*:
 
 ```bash
-tf doctor                       # readiness: session writer? budget headroom? (exit≠0 ⇒ not armed)
-tf budget arm <Xk>              # the +Xk consent → preflight-spend DENIES an unarmed Workflow
+tf doctor                                  # readiness: session writer? budget headroom? (exit≠0 ⇒ not armed)
+tf budget set --per-fanout-cap <Xk>        # FIRST: raise the per-fan-out ceiling (default 150k) to your +Xk
+tf budget arm <Xk>                         # the +Xk consent → preflight-spend DENIES an unarmed Workflow
 ```
+
+`arm` **refuses an est above `per_fanout_cap`** (default 150k) — so a large fan-out (e.g. +400k) arms
+nothing until you raise the cap with `tf budget set --per-fanout-cap` (and `--session-cap` if the
+cumulative ceiling is tighter). Check `tf budget status` to see both.
 
 `tf budget arm` makes the signal-INDEPENDENT cap real: the `PreToolUse(Workflow|Agent|Task)` hook
 (`preflight-spend`) **denies an unarmed Workflow outright** and refuses an over-cap arm — it does not
