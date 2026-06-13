@@ -378,8 +378,13 @@
             }
         }
 
+        // Tracks whether the live WebSocket push is currently connected, so the
+        // "last updated" line can distinguish a live push from a polled refresh.
+        let wsConnected = false;
+
         // ---- Refresh loop ----------------------------------------------
-        async function refresh() {
+        // `live` marks a refresh triggered by a WebSocket push (vs the poll fallback).
+        async function refresh(live) {
             const [budget, spend, efficacy, estimator] = await Promise.all([
                 fetchJson("/api/session-budget"),
                 fetchJson("/api/spend-by-model"),
@@ -391,15 +396,63 @@
             updateEfficacy(efficacy);
             updateEstimator(estimator);
             const now = new Date();
-            setText("last-updated", "Last updated " + now.toLocaleTimeString());
+            const mode = live ? "live" : (wsConnected ? "live" : "polling");
+            setText("last-updated", "Updated " + now.toLocaleTimeString() + " · " + mode);
+        }
+
+        // ---- Live WebSocket push ---------------------------------------
+        // Connect to /ws on the same host/port as the page (works on any interface,
+        // not just localhost). Each pushed line means the journal grew, so we re-fetch
+        // the REST endpoints — which always recompute aggregates from the full ledger —
+        // rather than re-implementing the Rust fold in JS. On drop, auto-reconnect with
+        // a bounded backoff. The 3s poll below stays running as a fallback so the page
+        // never goes stale if WS is unavailable.
+        let wsBackoff = 500;            // ms, doubles up to a cap on repeated failures
+        const WS_BACKOFF_MAX = 10000;   // ms
+
+        function connectWs() {
+            const proto = window.location.protocol === "https:" ? "wss:" : "ws:";
+            const url = proto + "//" + window.location.host + "/ws";
+            let socket;
+            try {
+                socket = new WebSocket(url);
+            } catch (e) {
+                scheduleReconnect();
+                return;
+            }
+            socket.onopen = function () {
+                wsConnected = true;
+                wsBackoff = 500; // reset backoff on a successful connection
+            };
+            socket.onmessage = function () {
+                // A new journal line arrived — pull fresh aggregates immediately.
+                refresh(true);
+            };
+            socket.onclose = function () {
+                wsConnected = false;
+                scheduleReconnect();
+            };
+            socket.onerror = function () {
+                // Let onclose drive the reconnect; just close to be safe.
+                try { socket.close(); } catch (e) { /* ignore */ }
+            };
+        }
+
+        function scheduleReconnect() {
+            const delay = wsBackoff;
+            wsBackoff = Math.min(wsBackoff * 2, WS_BACKOFF_MAX);
+            setTimeout(connectWs, delay);
         }
 
         function start() {
             initBudgetChart();
             initSpendChart();
             initEfficacyChart();
-            refresh();
-            setInterval(refresh, 3000);
+            refresh(false);
+            // Fallback poll: keeps the page fresh even if WS is unavailable. Cheap, so we
+            // leave it running alongside the live push.
+            setInterval(function () { refresh(false); }, 3000);
+            connectWs();
         }
 
         if (document.readyState === "loading") {

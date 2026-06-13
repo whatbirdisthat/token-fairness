@@ -21,7 +21,7 @@ tf-core = { path = "../tf-core" }
 # a single syscall, negligible binary-size cost.
 libc = "0.2"
 # Dashboard and telemetry support (optional, feature-gated)
-axum = { version = "0.7", optional = true }
+axum = { version = "0.7", features = ["ws"], optional = true }
 tokio = { version = "1", features = ["full"], optional = true }
 notify = { version = "6", optional = true }
 # serde_json used by CLI for JSON formatting/parsing
@@ -29,3 +29,8 @@ serde_json.workspace = true
 
 [dev-dependencies]
 tempfile = "3"
+# WebSocket client + async stream combinators for the /ws integration tests.
+# tokio-tungstenite 0.24 is the same version axum 0.7's `ws` feature pulls transitively,
+# so this adds no new version to the lockfile.
+tokio-tungstenite = "0.24"
+futures-util = "0.3"
