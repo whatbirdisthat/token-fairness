@@ -11,6 +11,8 @@ path = "src/main.rs"
 [features]
 # MCP server surface (feature-gated to protect hook binary size)
 mcp = ["rmcp", "tf-core/mcp"]
+# Dashboard and telemetry pipeline (feature-gated to protect hook binary size)
+dashboard = ["axum", "tokio", "notify", "tf-core/dashboard"]
 
 [dependencies]
 tf-core = { path = "../tf-core" }
@@ -19,8 +21,12 @@ tf-core = { path = "../tf-core" }
 libc = "0.2"
 # MCP server support (optional, feature-gated)
 rmcp = { version = "0.2", optional = true }
+# Dashboard and telemetry support (optional, feature-gated)
+axum = { version = "0.7", optional = true }
+tokio = { version = "1", features = ["full"], optional = true }
+notify = { version = "6", optional = true }
 # serde_json used by CLI for JSON formatting/parsing
 serde_json.workspace = true
 
 [dev-dependencies]
-# serde_json is in workspace dependencies now, accessible to tests
+tempfile = "3"

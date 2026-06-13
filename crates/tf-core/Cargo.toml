@@ -7,6 +7,8 @@ license.workspace = true
 [features]
 # MCP server support (feature-gated)
 mcp = []
+# Dashboard and telemetry pipeline (feature-gated)
+dashboard = []
 
 # Parsing only for the arithmetic verbs (all output hand-formatted, see fmt.rs). The
 # stateful verbs (ledger/registry/snapshot/signal) DO serialize JSON state files; we use
