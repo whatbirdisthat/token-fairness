@@ -29,8 +29,9 @@ pub const DEFAULT_WEEKLY_CAP: i64 = 20_000_000;
 /// Exit code for a DENY verdict (matches the scheduler's 0/3 confidence-branch convention).
 pub const DENY_CODE: i32 = 3;
 /// Max snapshot age (s) the gate accepts as a live signal before falling back to BLIND — the
-/// same default the dispatcher's `tf gate` uses.
-const SNAPSHOT_MAX_AGE: i64 = 900;
+/// same default the dispatcher's `tf gate` uses. `pub` so the dashboard's `endpoint_windows`
+/// reuses the EXACT same freshness threshold the gate enforces (one source of truth).
+pub const SNAPSHOT_MAX_AGE: i64 = 900;
 
 fn budget_file() -> String {
     format!("{}/budget.json", state::state_dir())
@@ -265,8 +266,9 @@ fn has(argv: &[String], key: &str) -> bool {
         .any(|a| a == &pfx || a.starts_with(&format!("{}=", pfx)))
 }
 
-/// Per-window display object for `tf budget status`.
-fn win_disp(
+/// Per-window display object for `tf budget status`. `pub` so the dashboard's `endpoint_windows`
+/// reuses the EXACT same window shaper as the statusline — proving parity between the two views.
+pub fn win_disp(
     st: &windows::WinSt,
     live: Option<f64>,
     cap: i64,

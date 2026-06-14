@@ -81,6 +81,12 @@ const BROADCAST_CAPACITY: usize = 1024;
 /// deterministic for tests.
 const WATCH_POLL: std::time::Duration = std::time::Duration::from_millis(250);
 
+/// Poll interval for the rolling-window snapshot watcher (Part 2b). The snapshot is written via
+/// atomic rename (not byte-appended), so it can't be tailed like the journal; instead we re-read
+/// its `captured_at` on a slower ~1.5s cadence and broadcast a synthetic `windows-updated` line on
+/// change so the dashboard re-fetches `/api/windows` near-instantly (vs the frontend's 3s poll).
+const SNAPSHOT_WATCH_POLL: std::time::Duration = std::time::Duration::from_millis(1500);
+
 /// Spawn the single events-journal watcher task and return the broadcast sender that `/ws`
 /// connections subscribe to.
 ///
@@ -134,6 +140,32 @@ fn spawn_event_broadcaster() -> tokio::sync::broadcast::Sender<String> {
             }
 
             tokio::time::sleep(WATCH_POLL).await;
+        }
+    });
+
+    // Second task (Part 2b): watch the rolling-window snapshot's `captured_at` and broadcast a
+    // synthetic `windows-updated` line whenever it changes, so the dashboard re-fetches
+    // `/api/windows` near-instantly. Best-effort and panic-free: a missing/unparseable snapshot
+    // simply yields `None` and is skipped; a send with no live receivers is a no-op.
+    let snapshot_tx = tx.clone();
+    tokio::spawn(async move {
+        // Seed with the current value so the very first observed value isn't reported as a change.
+        let mut last_captured_at = tf_core::windows::snapshot_captured_at();
+        loop {
+            // Stop emitting when nobody is listening, but keep the task cheap (sleep yields).
+            if snapshot_tx.receiver_count() == 0 && snapshot_tx.strong_count() <= 1 {
+                tokio::time::sleep(SNAPSHOT_WATCH_POLL).await;
+                continue;
+            }
+            let current = tf_core::windows::snapshot_captured_at();
+            if let Some(cap) = current {
+                if Some(cap) != last_captured_at {
+                    last_captured_at = current;
+                    let line = format!(r#"{{"kind":"windows-updated","captured_at":{}}}"#, cap);
+                    let _ = snapshot_tx.send(line);
+                }
+            }
+            tokio::time::sleep(SNAPSHOT_WATCH_POLL).await;
         }
     });
 
@@ -236,6 +268,24 @@ fn build_router(
             "/api/estimator-accuracy",
             get(|| async {
                 match tf_core::dashboard::endpoint_estimator_accuracy() {
+                    Ok(json) => axum::Json(json),
+                    Err(e) => axum::Json(serde_json::json!({"error": e.to_string()})),
+                }
+            }),
+        )
+        .route(
+            "/api/windows",
+            get(|| async {
+                match tf_core::dashboard::endpoint_windows() {
+                    Ok(json) => axum::Json(json),
+                    Err(e) => axum::Json(serde_json::json!({"error": e.to_string()})),
+                }
+            }),
+        )
+        .route(
+            "/api/mcp-invocations",
+            get(|| async {
+                match tf_core::dashboard::endpoint_mcp_invocations() {
                     Ok(json) => axum::Json(json),
                     Err(e) => axum::Json(serde_json::json!({"error": e.to_string()})),
                 }
@@ -558,5 +608,144 @@ mod tests {
 
         std::env::remove_var("I2P_HONESTY_EVENTS");
         let _ = std::fs::remove_file(&journal);
+    }
+
+    /// Part 2b: when the rolling-window snapshot's `captured_at` changes, the broadcaster pushes a
+    /// synthetic `windows-updated` line to connected clients. The watcher polls at 1.5s, so the
+    /// bound here is generous (4s) but still an assertion — the test fails if no push arrives.
+    #[tokio::test]
+    async fn ws_pushes_windows_updated_on_snapshot_change() {
+        let _g = WS_ENV_LOCK.lock().await;
+        let dir = std::env::temp_dir().join(format!("tf-ws-snap-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let snap = dir.join("ratelimit-snapshot.json");
+        // Seed an initial snapshot so the watcher's first reading isn't itself a "change".
+        std::fs::write(&snap, r#"{"captured_at":1000,"rate_limits":{}}"#).unwrap();
+        std::env::set_var("I2P_RATELIMIT_SNAPSHOT", &snap);
+        // The journal watcher also needs an isolated path so it doesn't read the real journal.
+        let journal = temp_events_path("snap-journal");
+        std::env::set_var("I2P_HONESTY_EVENTS", &journal);
+
+        let addr = spawn_test_server().await;
+        let mut client = connect_ws(addr).await;
+        // Let the snapshot watcher seed its baseline (captured_at=1000) before we change it.
+        tokio::time::sleep(Duration::from_millis(100)).await;
+
+        // Change captured_at (atomic-rename style: write fresh content).
+        std::fs::write(&snap, r#"{"captured_at":2000,"rate_limits":{}}"#).unwrap();
+
+        // Expect a windows-updated line within a bound that comfortably covers the 1.5s poll.
+        let got = loop {
+            let msg = tokio::time::timeout(Duration::from_secs(4), client.next())
+                .await
+                .expect("a windows-updated line must arrive within the poll bound")
+                .expect("stream yields a message")
+                .expect("message is not an error");
+            if let TMessage::Text(t) = msg {
+                break t;
+            }
+        };
+        assert!(
+            got.contains(r#""kind":"windows-updated""#) && got.contains(r#""captured_at":2000"#),
+            "expected windows-updated push, got: {got}"
+        );
+
+        std::env::remove_var("I2P_RATELIMIT_SNAPSHOT");
+        std::env::remove_var("I2P_HONESTY_EVENTS");
+        std::fs::remove_dir_all(&dir).ok();
+        let _ = std::fs::remove_file(&journal);
+    }
+
+    // ====================================================================
+    // /api/windows + /api/mcp-invocations route tests
+    // ====================================================================
+
+    /// Issue one HTTP/1.0 GET over a raw TCP socket and return the response BODY (everything after
+    /// the blank line). Avoids adding an HTTP-client dev-dependency; HTTP/1.0 with no keep-alive
+    /// means the server closes the socket at end-of-body, so read-to-end captures the whole body.
+    async fn http_get_body(addr: std::net::SocketAddr, path: &str) -> String {
+        use tokio::io::{AsyncReadExt, AsyncWriteExt};
+        let mut stream = tokio::net::TcpStream::connect(addr)
+            .await
+            .expect("connect to test server");
+        let req = format!("GET {} HTTP/1.0\r\nHost: localhost\r\n\r\n", path);
+        stream
+            .write_all(req.as_bytes())
+            .await
+            .expect("write request");
+        let mut raw = String::new();
+        stream
+            .read_to_string(&mut raw)
+            .await
+            .expect("read response");
+        match raw.split_once("\r\n\r\n") {
+            Some((_headers, body)) => body.to_string(),
+            None => raw,
+        }
+    }
+
+    /// `/api/windows` serves the grounded account-wide signal as JSON. A fresh seeded snapshot
+    /// surfaces `fresh:true` and the live `used_pct`s — the route wiring is correct end-to-end.
+    #[tokio::test]
+    async fn route_api_windows_returns_grounded_json() {
+        let _g = WS_ENV_LOCK.lock().await;
+        let dir = std::env::temp_dir().join(format!("tf-route-windows-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let snap = dir.join("ratelimit-snapshot.json");
+        std::fs::write(
+            &snap,
+            r#"{"captured_at":1900,"rate_limits":{"five_hour":{"used_percentage":77},"seven_day":{"used_percentage":21}}}"#,
+        )
+        .unwrap();
+        std::env::set_var("I2P_COST_STATE_DIR", &dir);
+        std::env::set_var("I2P_RATELIMIT_SNAPSHOT", &snap);
+        std::env::set_var("I2P_CLOCK", "2000");
+
+        let addr = spawn_test_server().await;
+        let body = http_get_body(addr, "/api/windows").await;
+
+        std::env::remove_var("I2P_COST_STATE_DIR");
+        std::env::remove_var("I2P_RATELIMIT_SNAPSHOT");
+        std::env::remove_var("I2P_CLOCK");
+
+        let json: serde_json::Value = serde_json::from_str(&body)
+            .unwrap_or_else(|_| panic!("body must be JSON, got: {body}"));
+        assert!(json.get("fresh").unwrap().as_bool().unwrap());
+        assert_eq!(
+            json.pointer("/five_hour/used_pct")
+                .unwrap()
+                .as_f64()
+                .unwrap(),
+            77.0
+        );
+
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    /// `/api/mcp-invocations` serves the audit-log view as JSON (count + recent).
+    #[tokio::test]
+    async fn route_api_mcp_invocations_returns_count_and_recent() {
+        let _g = WS_ENV_LOCK.lock().await;
+        let dir = std::env::temp_dir().join(format!("tf-route-mcp-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let log = dir.join("mcp-invocations.jsonl");
+        std::fs::write(
+            &log,
+            "{\"ts\":1,\"kind\":\"mcp\",\"method\":\"tf_budget_read\",\"params\":[],\"ok\":true}\n",
+        )
+        .unwrap();
+        std::env::set_var("I2P_MCP_INVOCATIONS", &log);
+
+        let addr = spawn_test_server().await;
+        let body = http_get_body(addr, "/api/mcp-invocations").await;
+
+        std::env::remove_var("I2P_MCP_INVOCATIONS");
+
+        let json: serde_json::Value = serde_json::from_str(&body)
+            .unwrap_or_else(|_| panic!("body must be JSON, got: {body}"));
+        assert_eq!(json.get("count").unwrap().as_u64().unwrap(), 1);
+        assert_eq!(json.get("recent").unwrap().as_array().unwrap().len(), 1);
+
+        std::fs::remove_dir_all(&dir).ok();
     }
 }

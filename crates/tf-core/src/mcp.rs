@@ -598,9 +598,37 @@ pub fn handle_resource_events() -> Result<Value, String> {
 // Tool and Resource Registry
 // ============================================================================
 
+/// Metadata-only summary of a params object: the SORTED list of top-level KEY NAMES, never any
+/// VALUES. Mirrors `observe.rs` HON-5 (prompt/argument content is never written to a log). A
+/// non-object (or absent) params yields an empty list.
+pub fn params_summary(params: &Value) -> Vec<String> {
+    let mut keys: Vec<String> = params
+        .as_object()
+        .map(|o| o.keys().cloned().collect())
+        .unwrap_or_default();
+    keys.sort();
+    keys
+}
+
+/// Append ONE MCP invocation audit record to [`observe::mcp_invocations_path`]. The `params`
+/// field is metadata-only (sorted top-level key NAMES — see [`params_summary`]); argument values
+/// are NEVER written. Best-effort: a logging failure must never break the MCP response, so the
+/// `append_line` result is discarded.
+pub fn log_invocation(method: &str, params_summary: &[String], ok: bool, err: Option<&str>) {
+    let ev = json!({
+        "ts": state::now_epoch(),
+        "kind": "mcp",
+        "method": method,
+        "params": params_summary,
+        "ok": ok,
+        "err": err,
+    });
+    let _ = state::append_line(&observe::mcp_invocations_path(), &ev.to_string());
+}
+
 /// Dispatches an MCP tool call to the appropriate handler.
 pub fn dispatch_tool(method: &str, params: &Value) -> Result<Value, String> {
-    match method {
+    let result = match method {
         "tf_gate" => handle_tf_gate(params),
         "tf_budget_read" => handle_tf_budget_read(params),
         "tf_budget_set" => handle_tf_budget_set(params),
@@ -612,17 +640,25 @@ pub fn dispatch_tool(method: &str, params: &Value) -> Result<Value, String> {
         "tf_plan_close" => handle_tf_plan_close(params),
         "tf_schedule_toggle" => handle_tf_schedule_toggle(params),
         _ => Err(format!("unknown method: {}", method)),
-    }
+    };
+    // Record exactly one audit line per call (metadata only); never let it break the response.
+    let err = result.as_ref().err().map(|e| e.as_str());
+    log_invocation(method, &params_summary(params), result.is_ok(), err);
+    result
 }
 
 /// Dispatches an MCP resource read to the appropriate handler.
 pub fn dispatch_resource(uri: &str) -> Result<Value, String> {
-    match uri {
+    let result = match uri {
         "tf://status" => handle_resource_status(),
         "tf://calibration" => handle_resource_calibration(),
         "tf://events" => handle_resource_events(),
         _ => Err(format!("unknown resource: {}", uri)),
-    }
+    };
+    // A resource read carries no params object; record the URI as the method, empty params.
+    let err = result.as_ref().err().map(|e| e.as_str());
+    log_invocation(uri, &[], result.is_ok(), err);
+    result
 }
 
 /// The MCP tool catalogue, for the `tools/list` handshake. Names + one-line descriptions.
@@ -1034,12 +1070,26 @@ mod tests {
 
     #[test]
     fn test_dispatch_tool_unknown_errors() {
-        assert!(dispatch_tool("tf_unknown", &json!({})).is_err());
+        // dispatch now appends a metadata-only audit line, so isolate the path under ENV_LOCK to
+        // avoid touching the real HOME-rooted log (and racing the dedicated audit tests).
+        let _g = ENV_LOCK.lock().unwrap();
+        let dir = temp_dir("mcp-dispatch-unknown-tool");
+        std::env::set_var("I2P_MCP_INVOCATIONS", dir.join("mcp.jsonl"));
+        let r = dispatch_tool("tf_unknown", &json!({}));
+        std::env::remove_var("I2P_MCP_INVOCATIONS");
+        std::fs::remove_dir_all(&dir).ok();
+        assert!(r.is_err());
     }
 
     #[test]
     fn test_dispatch_resource_unknown_errors() {
-        assert!(dispatch_resource("tf://unknown").is_err());
+        let _g = ENV_LOCK.lock().unwrap();
+        let dir = temp_dir("mcp-dispatch-unknown-res");
+        std::env::set_var("I2P_MCP_INVOCATIONS", dir.join("mcp.jsonl"));
+        let r = dispatch_resource("tf://unknown");
+        std::env::remove_var("I2P_MCP_INVOCATIONS");
+        std::fs::remove_dir_all(&dir).ok();
+        assert!(r.is_err());
     }
 
     #[test]
@@ -1052,5 +1102,117 @@ mod tests {
     fn test_resources_list_enumerates_all_three() {
         let list = resources_list();
         assert_eq!(list.get("resources").unwrap().as_array().unwrap().len(), 3);
+    }
+
+    // ---- MCP invocation audit log (metadata-only) ----
+
+    #[test]
+    fn params_summary_is_sorted_keys_only_never_values() {
+        let p = json!({"window": "hour", "cost": 500, "span_id": "secret-span"});
+        let keys = params_summary(&p);
+        assert_eq!(
+            keys,
+            vec!["cost", "span_id", "window"],
+            "sorted top-level keys"
+        );
+        // Values must never leak.
+        let joined = keys.join(",");
+        assert!(!joined.contains("hour"));
+        assert!(!joined.contains("500"));
+        assert!(!joined.contains("secret-span"));
+        // A non-object is an empty summary.
+        assert!(params_summary(&json!("scalar")).is_empty());
+        assert!(params_summary(&json!(null)).is_empty());
+    }
+
+    /// `dispatch_tool` records EXACTLY ONE audit line per call: `kind:"mcp"`, the method, sorted
+    /// param KEY names (no values), and the ok flag. Pins the exactly-once + metadata-only contract.
+    #[test]
+    fn dispatch_tool_logs_one_metadata_only_invocation() {
+        let _g = ENV_LOCK.lock().unwrap();
+        let dir = temp_dir("mcp-audit-tool");
+        let log = dir.join("mcp-invocations.jsonl");
+        std::env::set_var("I2P_MCP_INVOCATIONS", &log);
+        std::env::set_var("I2P_COST_STATE_DIR", &dir);
+
+        // A tool call carrying a value that must NOT appear in the log.
+        let _ = dispatch_tool("tf_budget_read", &json!({"secret_value": "leak-me"}));
+
+        std::env::remove_var("I2P_MCP_INVOCATIONS");
+        std::env::remove_var("I2P_COST_STATE_DIR");
+
+        let written = std::fs::read_to_string(&log).unwrap();
+        let lines: Vec<&str> = written.lines().collect();
+        assert_eq!(
+            lines.len(),
+            1,
+            "exactly one audit line per dispatch_tool call"
+        );
+        let ev: Value = serde_json::from_str(lines[0]).unwrap();
+        assert_eq!(ev.get("kind").unwrap(), "mcp");
+        assert_eq!(ev.get("method").unwrap(), "tf_budget_read");
+        // params is the KEY NAME only — the value is absent.
+        assert_eq!(ev.get("params").unwrap(), &json!(["secret_value"]));
+        assert!(
+            !written.contains("leak-me"),
+            "param VALUES must never be logged"
+        );
+        assert!(ev.get("ok").unwrap().is_boolean());
+
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    /// `dispatch_resource` records EXACTLY ONE audit line per call, with the URI as `method` and
+    /// empty params (a resource read carries no param object).
+    #[test]
+    fn dispatch_resource_logs_one_invocation() {
+        let _g = ENV_LOCK.lock().unwrap();
+        let dir = temp_dir("mcp-audit-res");
+        let log = dir.join("mcp-invocations.jsonl");
+        std::env::set_var("I2P_MCP_INVOCATIONS", &log);
+        std::env::set_var("I2P_COST_STATE_DIR", &dir);
+
+        let _ = dispatch_resource("tf://events");
+
+        std::env::remove_var("I2P_MCP_INVOCATIONS");
+        std::env::remove_var("I2P_COST_STATE_DIR");
+
+        let written = std::fs::read_to_string(&log).unwrap();
+        let lines: Vec<&str> = written.lines().collect();
+        assert_eq!(
+            lines.len(),
+            1,
+            "exactly one audit line per dispatch_resource call"
+        );
+        let ev: Value = serde_json::from_str(lines[0]).unwrap();
+        assert_eq!(ev.get("kind").unwrap(), "mcp");
+        assert_eq!(ev.get("method").unwrap(), "tf://events");
+        assert_eq!(ev.get("params").unwrap(), &json!([]));
+
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    /// A failing dispatch still logs exactly one line, with `ok:false` and an `err` string.
+    #[test]
+    fn dispatch_tool_logs_failure_with_err() {
+        let _g = ENV_LOCK.lock().unwrap();
+        let dir = temp_dir("mcp-audit-fail");
+        let log = dir.join("mcp-invocations.jsonl");
+        std::env::set_var("I2P_MCP_INVOCATIONS", &log);
+        std::env::set_var("I2P_COST_STATE_DIR", &dir);
+
+        let _ = dispatch_tool("tf_unknown_method", &json!({}));
+
+        std::env::remove_var("I2P_MCP_INVOCATIONS");
+        std::env::remove_var("I2P_COST_STATE_DIR");
+
+        let written = std::fs::read_to_string(&log).unwrap();
+        let lines: Vec<&str> = written.lines().collect();
+        assert_eq!(lines.len(), 1);
+        let ev: Value = serde_json::from_str(lines[0]).unwrap();
+        assert_eq!(ev.get("ok").unwrap().as_bool(), Some(false));
+        assert!(ev.get("err").unwrap().is_string());
+
+        std::fs::remove_dir_all(&dir).ok();
     }
 }

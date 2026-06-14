@@ -31,6 +31,17 @@ pub fn events_path() -> String {
     format!("{}/honesty-events.jsonl", state::state_dir())
 }
 
+/// The append-only MCP invocation audit log. UNGATED (mirrors [`events_path`]) so the writer
+/// (the `mcp` feature, via `mcp::log_invocation`) and the reader (the `dashboard` feature, via
+/// `dashboard::endpoint_mcp_invocations`) share ONE path without either feature depending on the
+/// other. Honours `I2P_MCP_INVOCATIONS`, else `{state_dir}/mcp-invocations.jsonl`.
+pub fn mcp_invocations_path() -> String {
+    if let Ok(p) = std::env::var("I2P_MCP_INVOCATIONS") {
+        return p;
+    }
+    format!("{}/mcp-invocations.jsonl", state::state_dir())
+}
+
 fn session_id() -> String {
     let p = format!("{}/session.json", state::state_dir());
     state::read_json(&p)
@@ -589,6 +600,22 @@ pub fn dispatch(argv: &[String]) -> Out {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn mcp_invocations_path_honours_override_else_state_dir() {
+        let _g = crate::testutil::ENV_LOCK.lock().unwrap();
+        // Override wins.
+        std::env::set_var("I2P_MCP_INVOCATIONS", "/tmp/explicit-mcp.jsonl");
+        assert_eq!(mcp_invocations_path(), "/tmp/explicit-mcp.jsonl");
+        std::env::remove_var("I2P_MCP_INVOCATIONS");
+        // Else state-dir-rooted.
+        std::env::set_var("I2P_COST_STATE_DIR", "/tmp/tf-mcp-dir");
+        assert_eq!(
+            mcp_invocations_path(),
+            "/tmp/tf-mcp-dir/mcp-invocations.jsonl"
+        );
+        std::env::remove_var("I2P_COST_STATE_DIR");
+    }
 
     #[test]
     fn save_only_for_genuine_overspend() {

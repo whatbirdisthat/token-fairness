@@ -10,7 +10,9 @@
 #   • every hooks.json command is a `bash …` shim — NOT the ELF directly — so verify-prereqs
 #     Check L (`bash -n` + smoke) passes (the documented carve-out for binary-backed hooks);
 #   • a per-arch binary is present, executable, and smoke-runs deterministically;
-#   • NO .mcp.json ships (review W5) — MCP Checks C/K pass vacuously, stated explicitly.
+#   • an OPTIONAL .mcp.json: when one ships (to register the `tf mcp` server), it must be valid
+#     JSON and route its server command through the tf-hook.sh bash shim — never the ELF directly
+#     (the same bash-shim invariant the hooks obey). When none ships, MCP Checks C/K pass vacuously.
 #
 # Exits non-zero on any failure. Needs bash + jq (for JSON validation).
 set -uo pipefail
@@ -70,8 +72,22 @@ else
   [ -f "$PLUGIN/bin/README.md" ] && ok "bin/README.md documents lazy-download" || bad "bin/README.md missing (explain the empty bin/)"
 fi
 
-printf '\n== E. MCP surface (review W5) ==\n'
-if [ -e "$PLUGIN/.mcp.json" ] || [ -e "$ROOT/.mcp.json" ]; then bad ".mcp.json present — this plugin ships none"; else ok "no .mcp.json (MCP Checks C/K pass vacuously — stated explicitly)"; fi
+printf '\n== E. MCP surface ==\n'
+# An .mcp.json is OPTIONAL. When one ships, it must be well-formed and its server command must go
+# through the tf-hook.sh bash shim — never the ELF directly — exactly like the hook invariant (C).
+MCPJ="$PLUGIN/.mcp.json"; [ -e "$MCPJ" ] || MCPJ="$ROOT/.mcp.json"
+if [ ! -e "$MCPJ" ]; then
+  ok "no .mcp.json (MCP surface optional — Checks C/K pass vacuously)"
+else
+  jq -e . "$MCPJ" >/dev/null 2>&1 && ok ".mcp.json is valid JSON" || bad ".mcp.json is not valid JSON"
+  # Flatten each server's command + args into one line and apply the shim invariant.
+  mcmds="$(jq -r '.mcpServers // {} | to_entries[] | (.value.command // "") + " " + ((.value.args // []) | join(" "))' "$MCPJ" 2>/dev/null)"
+  if [ -z "$(printf '%s' "$mcmds" | tr -d '[:space:]')" ]; then bad ".mcp.json declares no mcpServers command"
+  elif printf '%s\n' "$mcmds" | grep -qvE '^bash '; then bad "an .mcp.json server command is not a 'bash …' shim"
+  elif printf '%s\n' "$mcmds" | grep -q '/bin/tf-'; then bad "an .mcp.json server invokes the ELF binary directly (must use the tf-hook.sh shim)"
+  elif printf '%s\n' "$mcmds" | grep -qv 'tf-hook.sh'; then bad "an .mcp.json server does not route through hooks/tf-hook.sh"
+  else ok ".mcp.json server invokes the tf-hook.sh shim (no direct ELF)"; fi
+fi
 
 printf '\n========================================\n'
 if [ "$fail" -eq 0 ]; then
