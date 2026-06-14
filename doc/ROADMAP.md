@@ -239,7 +239,7 @@ an upstream change to the concierge-owned renderer (optional follow-up). Plan:
 ---
 
 ## [4] Dashboard reachability: configurable port + ship the FULL binary on green build
-> STATUS: AWAITING MERGE (built + reviewed; PR open under pr-approval governance)
+> STATUS: COMPLETE (PR #16 merged 2026-06-14; shipped in v0.1.2 — first full dashboard+MCP binary)
 > ADDED: 2026-06-14
 > LAST UPDATED: 2026-06-14
 > PRIORITY: HIGH
@@ -297,7 +297,7 @@ host before the next release lands. Full EARS/spec docs still say "default port 
 ---
 
 ## [5] Bump Node.js 20 GitHub Actions to Node 24-compatible versions (@v5)
-> STATUS: PENDING
+> STATUS: IN PROGRESS
 > ADDED: 2026-06-14
 > LAST UPDATED: 2026-06-14
 > PRIORITY: MEDIUM
