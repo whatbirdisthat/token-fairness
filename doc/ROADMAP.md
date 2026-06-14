@@ -146,3 +146,56 @@ Add Model Context Protocol (MCP) server surface to the `tf` binary so Claude Cod
 ### Development Plan Reference
 When this feature is selected for implementation, a detailed plan will be written to: `doc/[1]_MCP_SERVER_TELEMETRY_DASHBOARD_PLAN.md`
 The plan follows THE DEVELOPMENT SYSTEM.
+
+---
+
+## [2] Dashboard: grounded account-wide windows, real-time, + MCP hit evidence
+> STATUS: IN PROGRESS
+> ADDED: 2026-06-14
+> LAST UPDATED: 2026-06-14
+> PRIORITY: HIGH
+> GITHUB_ISSUE: #11
+
+**Brief Description**
+A multi-agent token blow-out was invisible on the dashboard because it only shows per-session
+spend vs a manual cap, never the **account-wide** 5h/weekly provider windows (the real lockout
+ceiling shared across all concurrent agents). Ground the dashboard in both signals (clearly
+labeled), make it genuinely real-time (live windows + live per-turn spend + live gate/blown feed),
+and make MCP invocations observable (audit log + dashboard view) and the `tf mcp` server registered.
+
+### User Stories
+- AS A developer running multiple agents I WANT the dashboard to show the account-wide 5h/weekly
+  window utilization SO THAT a shared-window blow-out is visible before lockout
+- AS A developer I WANT the dashboard to update as I work (windows, spend, gate/blown) SO THAT it
+  reflects live state, not end-of-session state
+- AS A developer I WANT evidence that the MCP is being hit SO THAT I can confirm the surface works
+
+### Acceptance Criteria
+1. Dashboard shows account-wide 5h + weekly `used_percentage` (same source as the statusline,
+   `windows::live_windows`), clearly labeled "account-wide / shared across all agents", with a
+   visible snapshot age and a BLIND state when the snapshot is stale (> SNAPSHOT_MAX_AGE).
+2. The session-cap card is relabeled as a per-session measure (not account-wide).
+3. Prometheus exposes real `tf_five_hour_used_percent` / `tf_seven_day_used_percent` (the faked
+   `tf_weekly_ceiling_percent` is removed/repointed) + `tf_window_snapshot_age_seconds`.
+4. Windows update on the dashboard within ~3s of each PostToolUse (poll), freshness visible.
+5. Live per-turn spend: a fail-open, throttled PostToolUse `spend --capture` makes the session
+   spend move mid-session (added per-tool latency measured and reported); never vetoes/delays a tool.
+6. A Live-Events feed renders gate/blown events as they fire.
+7. MCP invocations are logged to `mcp-invocations.jsonl` (top-level param KEYS only, never values)
+   at the dispatch choke points; `/api/mcp-invocations` + a dashboard card show a counter + recent hits.
+8. `tf mcp` is registered via a shipped `.mcp.json`; `plugin.json` note updated.
+9. Dashboard copy states hooks (not MCP) are the current enforcement path (no misleading claim).
+10. All new Rust stays feature-gated (`dashboard`/`mcp`); hook binary unaffected; suite green 3×;
+    fmt/clippy clean on pinned 1.96.0.
+
+### Implementation Notes
+Reuse `budget::win_disp` + `budget::SNAPSHOT_MAX_AGE` (promote to `pub`), `windows::live_windows`,
+`windows::{load,spent_in_window,remaining}`, `state::append_line`, `observe::events_path` pattern.
+New: `dashboard::endpoint_windows`, `dashboard::endpoint_mcp_invocations`,
+`windows::snapshot_captured_at`, `observe::mcp_invocations_path` (ungated), `mcp::log_invocation`.
+Frontend: Lockout-Risk card, Live-Events feed, MCP-Invocations card, relabels. Config:
+PostToolUse spend capture in `hooks.json`; new `plugins/scheduler/.mcp.json`. Full design in the
+approved plan file.
+
+### Development Plan Reference
+`/home/user/.claude/plans/i-want-to-add-glistening-valiant.md` (approved 2026-06-14).
