@@ -52,6 +52,10 @@
           {
             "type": "command",
             "command": "bash ${CLAUDE_PLUGIN_ROOT}/hooks/tf-hook.sh snapshot 2>/dev/null || true"
+          },
+          {
+            "type": "command",
+            "command": "bash ${CLAUDE_PLUGIN_ROOT}/hooks/spend-capture-throttled.sh 2>/dev/null || true"
           }
         ]
       }

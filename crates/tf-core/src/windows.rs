@@ -325,6 +325,20 @@ pub fn live_windows(max_age: i64) -> (Option<f64>, Option<f64>) {
     (g("five_hour"), g("seven_day"))
 }
 
+/// Read the `captured_at` epoch from the live snapshot, if present. `None` when the snapshot is
+/// absent or carries no positive `captured_at`. This is the SAME field `live_windows` reads for
+/// its freshness math, exposed so the gate and the dashboard share one reader (the dashboard
+/// derives `snapshot_age_seconds` / `fresh` from it without re-implementing the parse).
+pub fn snapshot_captured_at() -> Option<i64> {
+    let v = state::read_json(&snapshot_path())?;
+    let cap = state::int(&v, "captured_at", 0);
+    if cap > 0 {
+        Some(cap)
+    } else {
+        None
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -542,6 +556,28 @@ mod tests {
         assert_eq!(live_windows(900), (None, None));
         std::env::remove_var("I2P_RATELIMIT_SNAPSHOT");
         std::env::remove_var("I2P_CLOCK");
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn snapshot_captured_at_reads_field_else_none() {
+        let _g = crate::testutil::ENV_LOCK.lock().unwrap();
+        let dir = crate::testutil::temp_dir("windows-captured");
+        let snap = dir.join("snap.json");
+        std::env::set_var("I2P_RATELIMIT_SNAPSHOT", &snap);
+
+        // No file ⇒ None.
+        assert_eq!(snapshot_captured_at(), None);
+
+        // Positive captured_at ⇒ Some.
+        std::fs::write(&snap, r#"{"captured_at":1900,"rate_limits":{}}"#).unwrap();
+        assert_eq!(snapshot_captured_at(), Some(1900));
+
+        // Zero/absent captured_at ⇒ None (no usable freshness anchor).
+        std::fs::write(&snap, r#"{"rate_limits":{}}"#).unwrap();
+        assert_eq!(snapshot_captured_at(), None);
+
+        std::env::remove_var("I2P_RATELIMIT_SNAPSHOT");
         std::fs::remove_dir_all(&dir).ok();
     }
 }
