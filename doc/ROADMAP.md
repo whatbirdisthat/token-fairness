@@ -293,3 +293,34 @@ Front door: `.claude/welcome.md`. The local distributed binary
 `plugins/scheduler/bin/tf-x86_64-linux` (gitignored) was rebuilt full-featured so it works on this
 host before the next release lands. Full EARS/spec docs still say "default port 8080" — accurate, as
 `--port` only adds an override.
+
+---
+
+## [5] Bump Node.js 20 GitHub Actions to Node 24-compatible versions (@v5)
+> STATUS: PENDING
+> ADDED: 2026-06-14
+> LAST UPDATED: 2026-06-14
+> PRIORITY: MEDIUM
+> GITHUB_ISSUE: #17
+
+**Brief Description**
+CI surfaced a deprecation warning during the `v0.1.2` release run: `actions/checkout@v4` and
+`actions/upload-artifact@v4` run on the deprecated Node.js 20 runtime. GitHub forces Node 24 by
+default after **2026-06-16** and removes Node 20 on **2026-09-16**, after which the workflows break.
+Non-blocking today; a deadline-bound chore.
+
+### Acceptance Criteria
+1. Every `actions/checkout@v4`, `actions/upload-artifact@v4`, and `actions/download-artifact@v4` in
+   `.github/workflows/` is bumped to `@v5` (the Node 24-compatible major). Affected: `verify.yml`
+   (checkout ×4, upload-artifact ×1) and `release.yml` (checkout ×2, upload-artifact ×1,
+   download-artifact ×1).
+2. `verify` is green across all jobs (test/fmt/clippy, coverage, marketplace, all four cross-builds)
+   on the bump, and `release.yml` still publishes (its `gate`/`build`/`release` jobs unaffected).
+3. No "Node.js 20 actions are deprecated" warning remains in the run logs.
+
+### Implementation Notes
+Pure CI dependency bump — no Rust change, no version bump (so it must ride a PR to master; it will
+NOT auto-release on its own). `dtolnay/rust-toolchain` and `taiki-e/install-action` are out of scope
+(not Node-20 JS actions). Watch for breaking changes in the v4→v5 majors (notably
+`actions/upload-artifact@v5` does not merge same-named artifacts — fine here, every artifact name is
+unique). Tracked in issue #17.
