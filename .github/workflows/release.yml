@@ -34,7 +34,7 @@ jobs:
       tag: ${{ steps.decide.outputs.tag }}
       ref: ${{ steps.decide.outputs.ref }}
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
         with:
           fetch-depth: 0
           ref: ${{ github.event.workflow_run.head_sha || github.ref }}
@@ -89,7 +89,7 @@ jobs:
             target: aarch64-apple-darwin
             asset: tf-arm64-darwin   # macOS `uname -m` is `arm64`
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
         with:
           ref: ${{ needs.gate.outputs.ref }}
       - uses: dtolnay/rust-toolchain@1.96.0
@@ -114,7 +114,7 @@ jobs:
         run: |
           mkdir -p dist
           cp "target/${{ matrix.target }}/release/tf" "dist/${{ matrix.asset }}"
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v5
         with:
           name: ${{ matrix.asset }}
           path: dist/${{ matrix.asset }}
@@ -125,7 +125,7 @@ jobs:
     if: needs.gate.outputs.proceed == 'true'
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/download-artifact@v4
+      - uses: actions/download-artifact@v5
         with:
           path: dist
           merge-multiple: true
