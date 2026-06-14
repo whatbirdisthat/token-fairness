@@ -4,10 +4,34 @@
 
 use tf_core::Out;
 
+/// Spec default port (EARS DASH-001 / ROADMAP § [1]). Overridable via `--port` or
+/// `TF_DASHBOARD_PORT` so the dashboard can dodge a port already taken on the host
+/// (e.g. cadvisor, which also defaults to 8080).
+pub const DEFAULT_PORT: u16 = 8080;
+
+/// Resolve the port from the `TF_DASHBOARD_PORT` env var, falling back to [`DEFAULT_PORT`].
+/// An unset or unparseable value yields the default — the env override is best-effort.
+fn env_port() -> u16 {
+    std::env::var("TF_DASHBOARD_PORT")
+        .ok()
+        .and_then(|v| v.trim().parse::<u16>().ok())
+        .unwrap_or(DEFAULT_PORT)
+}
+
 /// Arguments for the dashboard command.
-#[derive(Debug, Default)]
+#[derive(Debug)]
 pub struct DashboardArgs {
     pub prometheus: bool,
+    pub port: u16,
+}
+
+impl Default for DashboardArgs {
+    fn default() -> Self {
+        DashboardArgs {
+            prometheus: false,
+            port: env_port(),
+        }
+    }
 }
 
 impl DashboardArgs {
@@ -22,6 +46,27 @@ impl DashboardArgs {
                     args.prometheus = true;
                     i += 1;
                 }
+                "--port" | "-p" => {
+                    let Some(raw) = argv.get(i + 1) else {
+                        return (args, Out::err("tf dashboard: --port requires a value", 2));
+                    };
+                    match raw.trim().parse::<u16>() {
+                        Ok(0) | Err(_) => {
+                            return (
+                                args,
+                                Out::err(
+                                    format!(
+                                        "tf dashboard: invalid port '{}' (expected 1-65535)",
+                                        raw
+                                    ),
+                                    2,
+                                ),
+                            );
+                        }
+                        Ok(p) => args.port = p,
+                    }
+                    i += 2;
+                }
                 "--help" | "-h" => {
                     return (
                         args,
@@ -31,8 +76,11 @@ impl DashboardArgs {
                              Usage: tf dashboard [OPTIONS]\n\n\
                              Options:\n  \
                              --prometheus         Enable Prometheus metrics export at GET /metrics\n  \
+                             --port <PORT>        Port to bind (default 8080, or $TF_DASHBOARD_PORT)\n  \
                              --help               Show this help message\n\n\
-                             The dashboard server binds to 0.0.0.0:8080 (all interfaces).\n",
+                             The dashboard server binds to 0.0.0.0 on the chosen port (all interfaces).\n\
+                             Tip: if port 8080 is already taken (e.g. cadvisor), run \
+                             `tf dashboard --port 8088`.\n",
                         ),
                     );
                 }
@@ -49,7 +97,10 @@ impl DashboardArgs {
 /// Run the dashboard server.
 /// Returns Out with status and exit code.
 pub fn run(args: DashboardArgs) -> Out {
-    println!("Dashboard running on 0.0.0.0:8080 (all interfaces)");
+    println!(
+        "Dashboard running on 0.0.0.0:{} (all interfaces) — open http://localhost:{}",
+        args.port, args.port
+    );
     if args.prometheus {
         println!("Prometheus metrics enabled at GET /metrics");
     }
@@ -60,7 +111,7 @@ pub fn run(args: DashboardArgs) -> Out {
         Err(e) => return Out::err(format!("failed to create tokio runtime: {}", e), 1),
     };
 
-    if let Err(e) = rt.block_on(start_server(args.prometheus)) {
+    if let Err(e) = rt.block_on(start_server(args.prometheus, args.port)) {
         return Out::err(format!("dashboard server error: {}", e), 1);
     }
 
@@ -316,17 +367,15 @@ fn build_router(
     router.with_state(broadcast_tx)
 }
 
-/// Start the axum HTTP server on 0.0.0.0:8080.
-async fn start_server(enable_prometheus: bool) -> Result<(), String> {
+/// Start the axum HTTP server on 0.0.0.0:`port` (default 8080).
+async fn start_server(enable_prometheus: bool, port: u16) -> Result<(), String> {
     // Start the single events-journal watcher and get the broadcast sender that `/ws`
     // connections subscribe to. One watcher fans out to all clients.
     let broadcast_tx = spawn_event_broadcaster();
     let router = build_router(enable_prometheus, broadcast_tx);
 
     // Bind and listen on all interfaces (0.0.0.0) so remote clients can connect
-    let addr = "0.0.0.0:8080"
-        .parse::<std::net::SocketAddr>()
-        .map_err(|e| e.to_string())?;
+    let addr = std::net::SocketAddr::from(([0, 0, 0, 0], port));
 
     let listener = tokio::net::TcpListener::bind(addr)
         .await
@@ -361,6 +410,95 @@ mod tests {
         let argv = vec![];
         let (args, _out) = DashboardArgs::from_argv(&argv);
         assert!(!args.prometheus);
+    }
+
+    // ---- port parsing (--port / -p / $TF_DASHBOARD_PORT) ----
+    // The flag/error tests are env-independent: an explicit `--port` overrides any env default, and
+    // the error cases never read the resolved port. The env tests below serialize on WS_ENV_LOCK.
+
+    #[test]
+    fn test_parse_port_flag_overrides_default() {
+        let argv = vec!["--port".to_string(), "9090".to_string()];
+        let (args, out) = DashboardArgs::from_argv(&argv);
+        assert_eq!(out.code, 0);
+        assert_eq!(args.port, 9090);
+    }
+
+    #[test]
+    fn test_parse_port_short_flag() {
+        let argv = vec!["-p".to_string(), "3000".to_string()];
+        let (args, _out) = DashboardArgs::from_argv(&argv);
+        assert_eq!(args.port, 3000);
+    }
+
+    #[test]
+    fn test_parse_port_zero_is_error() {
+        let argv = vec!["--port".to_string(), "0".to_string()];
+        let (_args, out) = DashboardArgs::from_argv(&argv);
+        assert_eq!(out.code, 2, "port 0 must be rejected");
+    }
+
+    #[test]
+    fn test_parse_port_nonnumeric_is_error() {
+        let argv = vec!["--port".to_string(), "abc".to_string()];
+        let (_args, out) = DashboardArgs::from_argv(&argv);
+        assert_eq!(out.code, 2);
+        assert!(out.stderr.contains("invalid port"));
+    }
+
+    #[test]
+    fn test_parse_port_missing_value_is_error() {
+        let argv = vec!["--port".to_string()];
+        let (_args, out) = DashboardArgs::from_argv(&argv);
+        assert_eq!(out.code, 2);
+        assert!(out.stderr.contains("requires a value"));
+    }
+
+    #[test]
+    fn test_help_mentions_port_and_cadvisor() {
+        let argv = vec!["--help".to_string()];
+        let (_args, out) = DashboardArgs::from_argv(&argv);
+        assert!(out.stdout.contains("--port"));
+        assert!(out.stdout.contains("cadvisor"));
+    }
+
+    #[tokio::test]
+    async fn test_default_port_is_8080_without_env() {
+        let _g = WS_ENV_LOCK.lock().await;
+        std::env::remove_var("TF_DASHBOARD_PORT");
+        let (args, _out) = DashboardArgs::from_argv(&[]);
+        assert_eq!(args.port, DEFAULT_PORT);
+        assert_eq!(args.port, 8080);
+    }
+
+    #[tokio::test]
+    async fn test_env_var_sets_default_port() {
+        let _g = WS_ENV_LOCK.lock().await;
+        std::env::set_var("TF_DASHBOARD_PORT", "7777");
+        let (args, _out) = DashboardArgs::from_argv(&[]);
+        std::env::remove_var("TF_DASHBOARD_PORT");
+        assert_eq!(args.port, 7777);
+    }
+
+    #[tokio::test]
+    async fn test_flag_beats_env() {
+        let _g = WS_ENV_LOCK.lock().await;
+        std::env::set_var("TF_DASHBOARD_PORT", "7777");
+        let (args, _out) = DashboardArgs::from_argv(&["--port".to_string(), "9090".to_string()]);
+        std::env::remove_var("TF_DASHBOARD_PORT");
+        assert_eq!(
+            args.port, 9090,
+            "explicit --port must win over the env default"
+        );
+    }
+
+    #[tokio::test]
+    async fn test_invalid_env_var_falls_back_to_default() {
+        let _g = WS_ENV_LOCK.lock().await;
+        std::env::set_var("TF_DASHBOARD_PORT", "not-a-port");
+        let (args, _out) = DashboardArgs::from_argv(&[]);
+        std::env::remove_var("TF_DASHBOARD_PORT");
+        assert_eq!(args.port, DEFAULT_PORT);
     }
 
     /// The root handler must serve the embedded page as `text/html` so browsers

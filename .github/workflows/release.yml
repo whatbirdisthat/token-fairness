@@ -1,19 +1,76 @@
 name: release
 
 # Publishes the per-arch `tf` binaries as GitHub Release assets so the plugin can lazy-download
-# them (hooks/tf-hook.sh) instead of committing binaries to the repo. Triggered by a `v*` tag.
+# them (hooks/tf-hook.sh) instead of committing binaries to the repo.
 # Asset names use the `uname` style the shim resolves: tf-<uname-m>-<uname-s>.
+#
+# Two ways in:
+#   1. push a `v*` tag           — an explicit, manual release.
+#   2. a GREEN `verify` on master — auto-release. The `gate` job cuts a release ONLY when the
+#      workspace version (Cargo.toml) has been bumped to a value with no existing `v<version>`
+#      release. So "updates to the binaries trigger a new release on green-build" — driven by a
+#      version bump (the honest signal that the shipped binary changed), never one per commit.
+#      (`gh release create <tag>` creates the tag itself, so we never rely on a GITHUB_TOKEN-pushed
+#      tag to re-trigger a workflow — a known no-op in Actions.)
 
 on:
   push:
     tags: ['v*']
+  workflow_run:
+    workflows: [verify]
+    types: [completed]
+    branches: [master]
 
 permissions:
   contents: write
 
 jobs:
+  # Decide whether to release and under which tag. Emits proceed=true/false and the tag name.
+  gate:
+    name: decide release
+    runs-on: ubuntu-latest
+    outputs:
+      proceed: ${{ steps.decide.outputs.proceed }}
+      tag: ${{ steps.decide.outputs.tag }}
+      ref: ${{ steps.decide.outputs.ref }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          ref: ${{ github.event.workflow_run.head_sha || github.ref }}
+      - id: decide
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          if [ "${{ github.event_name }}" = "push" ]; then
+            # Tag push — always release the pushed tag, build that exact ref.
+            echo "proceed=true" >> "$GITHUB_OUTPUT"
+            echo "tag=${{ github.ref_name }}" >> "$GITHUB_OUTPUT"
+            echo "ref=${{ github.ref_name }}" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          # workflow_run path: only on a SUCCESSFUL verify, and only for a new version.
+          if [ "${{ github.event.workflow_run.conclusion }}" != "success" ]; then
+            echo "verify did not pass (${{ github.event.workflow_run.conclusion }}) — no release"
+            echo "proceed=false" >> "$GITHUB_OUTPUT"; exit 0
+          fi
+          VERSION=$(grep -m1 '^version = ' Cargo.toml | sed -E 's/.*"([^"]+)".*/\1/')
+          TAG="v${VERSION}"
+          if git rev-parse "refs/tags/${TAG}" >/dev/null 2>&1 || gh release view "${TAG}" >/dev/null 2>&1; then
+            echo "release ${TAG} already exists — bump the workspace version to ship a new one"
+            echo "proceed=false" >> "$GITHUB_OUTPUT"
+          else
+            echo "version ${VERSION} is new on green master — releasing ${TAG}"
+            echo "proceed=true" >> "$GITHUB_OUTPUT"
+            echo "tag=${TAG}" >> "$GITHUB_OUTPUT"
+            echo "ref=${{ github.event.workflow_run.head_sha }}" >> "$GITHUB_OUTPUT"
+          fi
+
   build:
     name: build ${{ matrix.asset }}
+    needs: gate
+    if: needs.gate.outputs.proceed == 'true'
     runs-on: ${{ matrix.os }}
     strategy:
       fail-fast: false
@@ -33,6 +90,8 @@ jobs:
             asset: tf-arm64-darwin   # macOS `uname -m` is `arm64`
     steps:
       - uses: actions/checkout@v4
+        with:
+          ref: ${{ needs.gate.outputs.ref }}
       - uses: dtolnay/rust-toolchain@1.96.0
         with:
           targets: ${{ matrix.target }}
@@ -41,12 +100,15 @@ jobs:
         uses: taiki-e/install-action@v2
         with:
           tool: cross
+      # Ship the FULL binary: the dashboard + MCP surfaces are feature-gated (axum/tokio), so a
+      # bare `cargo build` would publish a `tf` with no `dashboard`/`mcp` command. tokio only spins
+      # up when `tf dashboard` runs, so the hot-hook path is unaffected — the cost is binary size.
       - name: build
         run: |
           if [[ "${{ matrix.target }}" == *linux-musl ]]; then
-            cross build --release --target ${{ matrix.target }}
+            cross build --release -p tf-cli --features mcp,dashboard --target ${{ matrix.target }}
           else
-            cargo build --release --target ${{ matrix.target }}
+            cargo build --release -p tf-cli --features mcp,dashboard --target ${{ matrix.target }}
           fi
       - name: stage asset
         run: |
@@ -59,7 +121,8 @@ jobs:
 
   release:
     name: assemble + publish release
-    needs: build
+    needs: [gate, build]
+    if: needs.gate.outputs.proceed == 'true'
     runs-on: ubuntu-latest
     steps:
       - uses: actions/download-artifact@v4
@@ -72,11 +135,14 @@ jobs:
           chmod +x tf-*
           sha256sum tf-* > SHA256SUMS
           echo "── SHA256SUMS ──"; cat SHA256SUMS
+      # On the workflow_run path the tag does not exist yet; `gh release create <tag>` creates it
+      # at the released commit. On the tag-push path the tag already exists and is reused.
       - name: create release
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
-          gh release create "${{ github.ref_name }}" dist/* \
+          gh release create "${{ needs.gate.outputs.tag }}" dist/* \
             --repo "${{ github.repository }}" \
-            --title "${{ github.ref_name }}" \
-            --notes "Per-arch \`tf\` binaries for the scheduler plugin, lazy-downloaded + checksum-verified by hooks/tf-hook.sh. Verify locally with \`sha256sum -c SHA256SUMS\`."
+            --target "${{ needs.gate.outputs.ref }}" \
+            --title "${{ needs.gate.outputs.tag }}" \
+            --notes "Per-arch \`tf\` binaries (full: dashboard + MCP) for the scheduler plugin, lazy-downloaded + checksum-verified by hooks/tf-hook.sh. Verify locally with \`sha256sum -c SHA256SUMS\`."

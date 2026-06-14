@@ -235,3 +235,61 @@ Mirrors the concierge statusline install/drift pattern and the throttle-stamp pa
 first among widgets (`00-` prefix) — leftmost the widget mechanism allows. True line-1 top-left needs
 an upstream change to the concierge-owned renderer (optional follow-up). Plan:
 `/home/user/.claude/plans/i-want-to-add-glistening-valiant.md`.
+
+---
+
+## [4] Dashboard reachability: configurable port + ship the FULL binary on green build
+> STATUS: AWAITING MERGE (built + reviewed; PR open under pr-approval governance)
+> ADDED: 2026-06-14
+> LAST UPDATED: 2026-06-14
+> PRIORITY: HIGH
+> DEPENDS ON: [1] (the dashboard this makes reachable)
+
+> ⚠️ **Why this exists.** Two defects made the live dashboard ([1]/[2]/[3]) effectively
+> unreachable in practice:
+> 1. **Port collision.** `tf dashboard` hard-bound `0.0.0.0:8080` — the same port cadvisor
+>    (and countless other tools) default to. On any host already running cadvisor the dashboard
+>    couldn't start, and `localhost:8080` showed cadvisor instead. There was no way to change it.
+> 2. **The released binary had no dashboard at all.** `dashboard`/`mcp` are feature-gated (axum,
+>    tokio — to keep the hot-hook binary lean), but `release.yml` built with a bare
+>    `cargo build --release` (no `--features`). Every published GitHub Release asset was a 695K
+>    `tf` with **no `dashboard` and no `mcp` command** — a headline COMPLETE feature ([1]) was
+>    never actually shipped. CI never caught it because no job exercised the feature-gated code.
+
+**Brief Description**
+Make the dashboard reachable end-to-end: a configurable bind port so it can dodge an occupied
+8080, and a release/CI pipeline that actually ships — and tests — the full (dashboard + MCP)
+binary, auto-cut on a green-build version bump. Plus a repository welcome front door that hands
+whoever opens the repo a clickable dashboard URL.
+
+### Acceptance Criteria
+1. `tf dashboard --port <N>` and `$TF_DASHBOARD_PORT` override the bind port (spec default stays
+   8080 per DASH-001). Invalid/zero/missing port → exit 2 with a clear message (was: silently
+   ignored — the `main.rs` dispatch only checked `stdout`, never the error code).
+2. The startup banner and `--help` are port-aware and name the cadvisor collision + the `--port`
+   escape hatch. The served page is verifiably the tf dashboard ("Token Fairness — Live Dashboard",
+   Chart.js, live `/ws`, `/api/windows`), not cadvisor.
+3. `release.yml` builds every per-arch asset with `--features mcp,dashboard` (the FULL binary).
+   tokio only spins up on `tf dashboard`, so the hot-hook path is unaffected — the cost is binary
+   size (695K → ~1.3M), an accepted trade for a shipped dashboard.
+4. CI (`verify.yml`) lints and tests the feature-gated code (`clippy`/`test` with
+   `--features mcp,dashboard`) and builds the smoke-tested + cross-compiled binaries full-featured,
+   so a stub-facade or a missing surface can never ship green again.
+5. **Auto-release on green build.** A green `verify` on `master` triggers `release.yml` (via
+   `workflow_run`); it cuts a release **iff** the workspace version is new (no existing
+   `v<version>`). A version bump is the honest signal that the binary changed — one release per
+   bump, never one per commit. Manual `v*` tag pushes still release. (`gh release create` makes the
+   tag, so we never depend on a GITHUB_TOKEN-pushed tag re-triggering a workflow — a known Actions
+   no-op.) Honours "every version bump needs a matching tag."
+6. `.claude/welcome.md` (CONCIERGE format) greets whoever opens the repo with the clickable
+   dashboard URL + exact start command and the cadvisor caveat.
+7. Workspace version bumped `0.1.1 → 0.1.2` so merging this to green master ships the first FULL
+   binary (`v0.1.1` is already released as the lean one).
+
+### Implementation Notes
+Code: `crates/tf-cli/src/dashboard_run.rs` (port flag/env + validation, port-aware banner/help),
+`crates/tf-cli/src/main.rs` (dispatch honours parse-error exit codes). CI: `.github/workflows/{release,verify}.yml`.
+Front door: `.claude/welcome.md`. The local distributed binary
+`plugins/scheduler/bin/tf-x86_64-linux` (gitignored) was rebuilt full-featured so it works on this
+host before the next release lands. Full EARS/spec docs still say "default port 8080" — accurate, as
+`--port` only adds an override.

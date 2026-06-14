@@ -175,9 +175,11 @@ fn main() {
         "mcp" => mcp_server::run(),
         #[cfg(feature = "dashboard")]
         "dashboard" => {
-            let (args, help_out) = dashboard_run::DashboardArgs::from_argv(rest);
-            if !help_out.stdout.is_empty() {
-                help_out
+            let (args, parse_out) = dashboard_run::DashboardArgs::from_argv(rest);
+            // Short-circuit on help (stdout set) or a parse error (non-zero code);
+            // otherwise the parsed args are valid and we run the server.
+            if !parse_out.stdout.is_empty() || parse_out.code != 0 {
+                parse_out
             } else {
                 dashboard_run::run(args)
             }

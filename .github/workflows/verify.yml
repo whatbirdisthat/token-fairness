@@ -21,8 +21,14 @@ jobs:
         with:
           components: rustfmt, clippy
       - run: cargo fmt --all --check
+      # Lean (hook) build: the default feature set hooks actually run.
       - run: cargo clippy --all-targets -- -D warnings
       - run: cargo test --all
+      # Full build: the dashboard + MCP surfaces ship in the released binary, so CI must lint and
+      # test them too — a bare `cargo test` leaves all feature-gated code (the dashboard server,
+      # the MCP handlers) unexercised, which is how a stub facade once slipped through.
+      - run: cargo clippy --all-targets -p tf-cli --features mcp,dashboard -- -D warnings
+      - run: cargo test -p tf-cli --features mcp,dashboard
 
   coverage:
     name: llvm-cov (ratcheting toward 100%)
@@ -57,8 +63,8 @@ jobs:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@1.96.0
       - run: sudo apt-get update && sudo apt-get install -y jq
-      # The host binary the verify script smoke-tests.
-      - run: cargo build --release
+      # The host binary the verify script smoke-tests — full-featured, matching the released asset.
+      - run: cargo build --release -p tf-cli --features mcp,dashboard
       - run: |
           ARCH=$(uname -m); mkdir -p plugins/scheduler/bin
           cp target/release/tf "plugins/scheduler/bin/tf-${ARCH}-linux"
@@ -91,12 +97,13 @@ jobs:
         uses: taiki-e/install-action@v2
         with:
           tool: cross
+      # Full-featured, byte-for-byte the same flags release.yml ships with (parity).
       - name: build
         run: |
           if [[ "${{ matrix.target }}" == *linux-musl ]]; then
-            cross build --release --target ${{ matrix.target }}
+            cross build --release -p tf-cli --features mcp,dashboard --target ${{ matrix.target }}
           else
-            cargo build --release --target ${{ matrix.target }}
+            cargo build --release -p tf-cli --features mcp,dashboard --target ${{ matrix.target }}
           fi
       - uses: actions/upload-artifact@v4
         with:
