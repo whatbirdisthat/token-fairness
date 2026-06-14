@@ -297,7 +297,7 @@ host before the next release lands. Full EARS/spec docs still say "default port 
 ---
 
 ## [5] Bump Node.js 20 GitHub Actions to Node 24-compatible versions (@v5)
-> STATUS: IN PROGRESS
+> STATUS: COMPLETE (PR #19 merged 2026-06-14; issue #17 closed — checkout@v5, upload-artifact@v6, download-artifact@v7; zero Node 20 warnings)
 > ADDED: 2026-06-14
 > LAST UPDATED: 2026-06-14
 > PRIORITY: MEDIUM
