@@ -1,6 +1,6 @@
 # Project Roadmap
 
-> Last updated: 2026-06-13
+> Last updated: 2026-06-14
 > Maintained by: Claude Code + FOUNDRY agents
 
 This document is the authoritative list of planned features for this project.
@@ -150,11 +150,11 @@ The plan follows THE DEVELOPMENT SYSTEM.
 ---
 
 ## [2] Dashboard: grounded account-wide windows, real-time, + MCP hit evidence
-> STATUS: IN PROGRESS
+> STATUS: COMPLETE (PR #12 merged 2026-06-14; issue #11 closed)
 > ADDED: 2026-06-14
 > LAST UPDATED: 2026-06-14
 > PRIORITY: HIGH
-> GITHUB_ISSUE: #11
+> GITHUB_ISSUE: #11 (CLOSED)
 
 **Brief Description**
 A multi-agent token blow-out was invisible on the dashboard because it only shows per-session
@@ -203,12 +203,12 @@ approved plan file.
 ---
 
 ## [3] Statusline → snapshot bridge (feed the dashboard windows + live risk widget)
-> STATUS: IN PROGRESS
+> STATUS: COMPLETE (PR #14 merged 2026-06-14; issue #13 closed; CI follow-up 8afae3f)
 > ADDED: 2026-06-14
 > LAST UPDATED: 2026-06-14
 > PRIORITY: HIGH
-> GITHUB_ISSUE: #13
-> DEPENDS ON: [2] (the dashboard windows this feeds; PR #12)
+> GITHUB_ISSUE: #13 (CLOSED)
+> DEPENDS ON: [2] (the dashboard windows this feeds; PR #12 — merged)
 
 **Brief Description**
 The dashboard's account-wide 5h/weekly gauges (item [2]) sit BLIND because Claude Code delivers the
