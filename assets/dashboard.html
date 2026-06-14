@@ -94,6 +94,94 @@
         .error-state { color: var(--red); }
         .error-state .detail { color: var(--muted); font-size: 0.75rem; margin-top: 6px; word-break: break-word; }
         .hidden { display: none !important; }
+
+        /* ---- Lockout Risk card (headline, full-width above the grid) ---- */
+        .lockout-card {
+            background: var(--panel);
+            border: 1px solid var(--panel-border);
+            border-radius: 10px;
+            padding: 20px;
+            margin-bottom: 20px;
+        }
+        .lockout-card h2 { font-size: 1.05rem; font-weight: 600; margin: 0 0 4px 0; }
+        .lockout-scope {
+            display: inline-block;
+            font-size: 0.78rem; font-weight: 600;
+            color: var(--accent);
+            background: rgba(88, 166, 255, 0.12);
+            border: 1px solid rgba(88, 166, 255, 0.3);
+            border-radius: 6px;
+            padding: 2px 8px;
+            margin-bottom: 4px;
+        }
+        .lockout-freshness { font-size: 0.8rem; color: var(--muted); margin: 0 0 16px 0; min-height: 1.1em; }
+        .lockout-freshness.fresh { color: var(--green); }
+        .lockout-gauges {
+            display: grid;
+            grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
+            gap: 16px;
+        }
+        .lockout-gauge-wrap { position: relative; height: 200px; }
+        .lockout-gauge-title { text-align: center; font-size: 0.85rem; color: var(--muted); margin: 0 0 8px 0; }
+        .blind-banner {
+            display: flex; flex-direction: column; gap: 4px;
+            background: rgba(248, 81, 73, 0.1);
+            border: 1px solid rgba(248, 81, 73, 0.4);
+            border-radius: 8px;
+            color: var(--red);
+            padding: 12px 16px;
+            font-size: 0.9rem;
+            margin-bottom: 16px;
+        }
+        .blind-banner .blind-detail { color: var(--muted); font-size: 0.78rem; }
+
+        /* ---- Live Events feed ---- */
+        #events-list {
+            list-style: none; margin: 0; padding: 0;
+            flex: 1; overflow-y: auto; min-height: 180px; max-height: 320px;
+        }
+        #events-list li {
+            display: flex; align-items: baseline; gap: 8px;
+            padding: 6px 0;
+            border-bottom: 1px solid var(--panel-border);
+            font-size: 0.82rem;
+        }
+        #events-list li:last-child { border-bottom: none; }
+        .ev-kind {
+            font-weight: 600; font-size: 0.72rem; text-transform: uppercase;
+            letter-spacing: 0.03em;
+            border-radius: 4px; padding: 1px 6px; white-space: nowrap;
+            border: 1px solid currentColor;
+        }
+        .ev-kind.neutral { color: var(--muted); }
+        .ev-kind.green   { color: var(--green); }
+        .ev-kind.red     { color: var(--red); }
+        .ev-kind.blue    { color: var(--accent); }
+        .ev-kind.muted   { color: var(--panel-border); }
+        .ev-detail { flex: 1; color: var(--text); word-break: break-word; }
+        .ev-time { color: var(--muted); font-size: 0.74rem; white-space: nowrap; }
+
+        /* ---- MCP invocations ---- */
+        .mcp-count { font-size: 3rem; font-weight: 700; line-height: 1; color: var(--accent); }
+        .mcp-count-label { color: var(--muted); font-size: 0.8rem; margin: 4px 0 12px 0; }
+        .mcp-note {
+            font-size: 0.75rem; color: var(--muted);
+            border-top: 1px solid var(--panel-border);
+            padding-top: 10px; margin-top: 10px;
+        }
+        #mcp-list { list-style: none; margin: 0; padding: 0; overflow-y: auto; max-height: 200px; }
+        #mcp-list li {
+            display: flex; align-items: baseline; gap: 8px;
+            padding: 5px 0; border-bottom: 1px solid var(--panel-border);
+            font-size: 0.8rem;
+        }
+        #mcp-list li:last-child { border-bottom: none; }
+        .mcp-dot { width: 8px; height: 8px; border-radius: 50%; flex: none; }
+        .mcp-dot.ok { background: var(--green); }
+        .mcp-dot.err { background: var(--red); }
+        .mcp-method { font-weight: 600; }
+        .mcp-params { color: var(--muted); font-size: 0.74rem; flex: 1; word-break: break-word; }
+        .mcp-time { color: var(--muted); font-size: 0.74rem; white-space: nowrap; }
     </style>
 </head>
 <body>
@@ -101,6 +189,46 @@
         <h1><span class="dot" aria-hidden="true"></span>Token Fairness — Live Dashboard</h1>
         <div id="last-updated" aria-live="polite">Connecting…</div>
     </header>
+
+    <!-- 0. Lockout Risk — the headline. Account-wide rolling windows. -->
+    <section class="lockout-card" aria-label="Lockout risk — account-wide rolling windows">
+        <h2>Lockout Risk</h2>
+        <div><span class="lockout-scope">Account-wide — shared across ALL agents &amp; sessions</span></div>
+        <p class="lockout-freshness" id="windows-freshness" aria-live="polite">&nbsp;</p>
+
+        <div class="blind-banner hidden" id="windows-blind" role="alert">
+            <div>BLIND — No live signal: windows unknown</div>
+            <div class="blind-detail" id="windows-blind-detail">Snapshot stale &gt; 15 min.</div>
+        </div>
+
+        <div class="error-state hidden" id="windows-error">
+            <div>Failed to load rolling windows</div>
+            <div class="detail" id="windows-error-detail"></div>
+        </div>
+
+        <div class="lockout-gauges" id="windows-gauges">
+            <div>
+                <p class="lockout-gauge-title">5-hour window</p>
+                <div class="lockout-gauge-wrap">
+                    <canvas id="fiveHourGauge"></canvas>
+                    <div class="gauge-overlay">
+                        <div class="big" id="five-hour-pct">—</div>
+                        <div class="label">used</div>
+                    </div>
+                </div>
+            </div>
+            <div>
+                <p class="lockout-gauge-title">Weekly window</p>
+                <div class="lockout-gauge-wrap">
+                    <canvas id="sevenDayGauge"></canvas>
+                    <div class="gauge-overlay">
+                        <div class="big" id="seven-day-pct">—</div>
+                        <div class="label">used</div>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </section>
 
     <div class="grid">
         <!-- 1. Budget gauge -->
@@ -160,6 +288,29 @@
                 <div class="detail" id="estimator-error-detail"></div>
             </div>
         </section>
+
+        <!-- 5. Live events feed -->
+        <section class="card" aria-label="Live events">
+            <h2>Live Events</h2>
+            <p class="subtitle">Streamed from the journal as they fire (last 30)</p>
+            <ul id="events-list" aria-live="polite"></ul>
+            <div class="empty-state" id="events-empty">Waiting for live events…</div>
+        </section>
+
+        <!-- 6. MCP invocations -->
+        <section class="card" aria-label="MCP invocations">
+            <h2>MCP Invocations</h2>
+            <p class="subtitle">Read-only MCP tool calls observed</p>
+            <div class="mcp-count" id="mcp-count">—</div>
+            <div class="mcp-count-label">total invocations</div>
+            <ul id="mcp-list"></ul>
+            <div class="empty-state hidden" id="mcp-empty">No MCP invocations yet.</div>
+            <div class="error-state hidden" id="mcp-error">
+                <div>Failed to load MCP invocations</div>
+                <div class="detail" id="mcp-error-detail"></div>
+            </div>
+            <p class="mcp-note">MCP surface — agent spawns are currently enforced by PreToolUse hooks, not MCP.</p>
+        </section>
     </div>
 
     <script>
@@ -182,6 +333,20 @@
             if (pct > 90) return "#f85149";   // red
             if (pct >= 70) return "#d29922";  // amber
             return "#2ea043";                 // green
+        }
+        // Human-readable "Ns ago" / "Nm ago" from a whole-second age.
+        function agoFromSeconds(secs) {
+            const s = Number(secs);
+            if (!isFinite(s) || s < 0) return "unknown age";
+            if (s < 60) return Math.round(s) + "s ago";
+            if (s < 3600) return Math.round(s / 60) + "m ago";
+            return Math.round(s / 3600) + "h ago";
+        }
+        // Human-readable "Ns ago" from a unix-second timestamp, relative to now.
+        function agoFromTs(ts) {
+            const t = Number(ts);
+            if (!isFinite(t) || t <= 0) return "";
+            return agoFromSeconds(Date.now() / 1000 - t);
         }
 
         // ---- Robust fetch ----------------------------------------------
@@ -215,6 +380,99 @@
         const sliceColors = ["#58a6ff", "#2ea043", "#d29922", "#bc8cff", "#f85149", "#39c5cf", "#ff7b72", "#a5d6ff"];
 
         let charts = {};
+
+        // ---- 0. Lockout Risk — account-wide rolling windows ------------
+        // Reuses the doughnut-gauge geometry from the budget gauge.
+        function makeWindowGauge(canvasId) {
+            const ctx = document.getElementById(canvasId).getContext("2d");
+            return new Chart(ctx, {
+                type: "doughnut",
+                data: {
+                    labels: ["Used", "Remaining"],
+                    datasets: [{
+                        data: [0, 100],
+                        backgroundColor: ["#2ea043", "#232b36"],
+                        borderColor: "#171c24",
+                        borderWidth: 2,
+                        circumference: 270,
+                        rotation: 225
+                    }]
+                },
+                options: {
+                    responsive: true,
+                    maintainAspectRatio: false,
+                    cutout: "70%",
+                    plugins: {
+                        legend: { display: false },
+                        tooltip: {
+                            callbacks: { label: (c) => c.label + ": " + clampPct(c.parsed).toFixed(1) + "%" }
+                        }
+                    }
+                }
+            });
+        }
+        function initWindowCharts() {
+            charts.fiveHour = makeWindowGauge("fiveHourGauge");
+            charts.sevenDay = makeWindowGauge("sevenDayGauge");
+        }
+        // Sets one window gauge from a used_pct that may be null (blind).
+        function applyWindowGauge(chart, pctEl, usedPct) {
+            const blind = (usedPct === null || usedPct === undefined);
+            if (blind) {
+                chart.data.datasets[0].data = [0, 100];
+                chart.data.datasets[0].backgroundColor = ["#232b36", "#232b36"];
+                chart.update();
+                if (pctEl) { pctEl.textContent = "—"; pctEl.style.color = "#8b98a9"; }
+                return;
+            }
+            const pct = clampPct(usedPct);
+            const color = gaugeColor(pct);
+            chart.data.datasets[0].data = [pct, 100 - pct];
+            chart.data.datasets[0].backgroundColor = [color, "#232b36"];
+            chart.update();
+            if (pctEl) { pctEl.textContent = pct.toFixed(0) + "%"; pctEl.style.color = color; }
+        }
+        function updateWindows(result) {
+            if (!result.ok) {
+                hide("windows-gauges"); hide("windows-blind");
+                show("windows-error"); setText("windows-error-detail", result.error);
+                setText("windows-freshness", " ");
+                const fe = document.getElementById("windows-freshness");
+                if (fe) fe.classList.remove("fresh");
+                return;
+            }
+            hide("windows-error");
+            const d = result.data || {};
+            const fresh = d.fresh === true && d.blind !== true;
+            const freshEl = document.getElementById("windows-freshness");
+
+            // Freshness line, green when fresh.
+            const age = agoFromSeconds(d.snapshot_age_seconds);
+            setText("windows-freshness", "snapshot " + age + (fresh ? " · fresh" : " · stale"));
+            if (freshEl) freshEl.classList.toggle("fresh", fresh);
+
+            if (d.blind === true) {
+                show("windows-blind");
+                const maxMin = Math.round((Number(d.max_age_seconds) || 900) / 60);
+                setText("windows-blind-detail",
+                    "Snapshot stale > " + maxMin + " min (" + age + "). Windows unknown — gauges show —.");
+                // Still render gauges, but blank (—) rather than a fabricated value.
+                applyWindowGauge(charts.fiveHour, document.getElementById("five-hour-pct"), null);
+                applyWindowGauge(charts.sevenDay, document.getElementById("seven-day-pct"), null);
+                show("windows-gauges");
+                return;
+            }
+
+            hide("windows-blind");
+            show("windows-gauges");
+            const fh = d.five_hour || {};
+            const sd = d.seven_day || {};
+            // used_pct may legitimately be null even when not globally blind.
+            applyWindowGauge(charts.fiveHour, document.getElementById("five-hour-pct"),
+                (fh.used_pct === null || fh.used_pct === undefined) ? null : fh.used_pct);
+            applyWindowGauge(charts.sevenDay, document.getElementById("seven-day-pct"),
+                (sd.used_pct === null || sd.used_pct === undefined) ? null : sd.used_pct);
+        }
 
         // ---- 1. Budget gauge -------------------------------------------
         function initBudgetChart() {
@@ -265,6 +523,7 @@
             const pctEl = document.getElementById("budget-pct");
             if (pctEl) pctEl.style.color = color;
             setText("budget-subtitle",
+                "This session only — not account-wide · updates each turn  ·  " +
                 formatTokens(d.current_spend) + " / " + formatTokens(d.session_cap) +
                 " tokens  ·  per-fanout cap " + formatTokens(d.per_fanout_cap));
         }
@@ -378,6 +637,123 @@
             }
         }
 
+        // ---- 6. MCP invocations ----------------------------------------
+        function updateMcp(result) {
+            if (!result.ok) {
+                hide("mcp-list"); hide("mcp-empty");
+                show("mcp-error"); setText("mcp-error-detail", result.error);
+                setText("mcp-count", "—");
+                return;
+            }
+            hide("mcp-error");
+            const d = result.data || {};
+            const count = Number(d.count) || 0;
+            setText("mcp-count", String(count));
+            const recent = Array.isArray(d.recent) ? d.recent : [];
+            const list = document.getElementById("mcp-list");
+            if (!list) return;
+            if (recent.length === 0) {
+                list.innerHTML = "";
+                hide("mcp-list"); show("mcp-empty");
+                return;
+            }
+            hide("mcp-empty"); show("mcp-list");
+            // Most-recent first.
+            const rows = recent.slice().reverse();
+            const frag = document.createDocumentFragment();
+            for (const r of rows) {
+                const li = document.createElement("li");
+
+                const dot = document.createElement("span");
+                dot.className = "mcp-dot " + (r.ok ? "ok" : "err");
+                li.appendChild(dot);
+
+                const method = document.createElement("span");
+                method.className = "mcp-method";
+                method.textContent = r.method ? String(r.method) : "(unknown)";
+                li.appendChild(method);
+
+                const params = document.createElement("span");
+                params.className = "mcp-params";
+                // params is KEY NAMES only — already redacted; render verbatim.
+                const keys = Array.isArray(r.params) ? r.params : [];
+                params.textContent = keys.length ? keys.join(", ") : "—";
+                if (!r.ok && r.err) params.textContent += "  · err: " + String(r.err);
+                li.appendChild(params);
+
+                const time = document.createElement("span");
+                time.className = "mcp-time";
+                time.textContent = agoFromTs(r.ts);
+                li.appendChild(time);
+
+                frag.appendChild(li);
+            }
+            list.innerHTML = "";
+            list.appendChild(frag);
+        }
+
+        // ---- 5. Live events feed ---------------------------------------
+        // Each WS line is a raw JSONL journal entry. We classify by `kind`
+        // for colour, summarise the salient fields, and cap the list.
+        const EVENTS_MAX = 30;
+        function eventKindClass(kind) {
+            switch (kind) {
+                case "blown":           return "red";
+                case "save":
+                case "allow":           return "green";
+                case "spend":           return "blue";
+                case "windows-updated": return "muted";
+                case "gate":            return "neutral";
+                default:                return "neutral";
+            }
+        }
+        // Builds a short human summary from whichever fields are present.
+        function eventSummary(ev) {
+            const parts = [];
+            if (ev.class !== undefined && ev.class !== null) parts.push("class=" + ev.class);
+            if (ev.reason !== undefined && ev.reason !== null) parts.push(String(ev.reason));
+            if (ev.tool !== undefined && ev.tool !== null) parts.push("tool=" + ev.tool);
+            if (ev.captured_at !== undefined && ev.captured_at !== null) parts.push("captured_at=" + ev.captured_at);
+            return parts.join(" · ");
+        }
+        function pushEvent(line) {
+            let ev;
+            try {
+                ev = JSON.parse(line);
+            } catch (e) {
+                return; // not a JSON line — ignore
+            }
+            if (!ev || typeof ev !== "object") return;
+            const list = document.getElementById("events-list");
+            if (!list) return;
+            hide("events-empty");
+
+            const li = document.createElement("li");
+
+            const kindSpan = document.createElement("span");
+            const kind = ev.kind ? String(ev.kind) : "event";
+            kindSpan.className = "ev-kind " + eventKindClass(kind);
+            kindSpan.textContent = kind;
+            li.appendChild(kindSpan);
+
+            const detail = document.createElement("span");
+            detail.className = "ev-detail";
+            detail.textContent = eventSummary(ev);
+            li.appendChild(detail);
+
+            const time = document.createElement("span");
+            time.className = "ev-time";
+            // Prefer an explicit ts/captured_at; else stamp arrival time.
+            const ts = ev.ts || ev.captured_at;
+            time.textContent = ts ? agoFromTs(ts) : new Date().toLocaleTimeString();
+            li.appendChild(time);
+
+            list.insertBefore(li, list.firstChild);
+            while (list.children.length > EVENTS_MAX) {
+                list.removeChild(list.lastChild);
+            }
+        }
+
         // Tracks whether the live WebSocket push is currently connected, so the
         // "last updated" line can distinguish a live push from a polled refresh.
         let wsConnected = false;
@@ -385,19 +761,30 @@
         // ---- Refresh loop ----------------------------------------------
         // `live` marks a refresh triggered by a WebSocket push (vs the poll fallback).
         async function refresh(live) {
-            const [budget, spend, efficacy, estimator] = await Promise.all([
+            const [budget, spend, efficacy, estimator, windows, mcp] = await Promise.all([
                 fetchJson("/api/session-budget"),
                 fetchJson("/api/spend-by-model"),
                 fetchJson("/api/guard-efficacy"),
-                fetchJson("/api/estimator-accuracy")
+                fetchJson("/api/estimator-accuracy"),
+                fetchJson("/api/windows"),
+                fetchJson("/api/mcp-invocations")
             ]);
             updateBudget(budget);
             updateSpend(spend);
             updateEfficacy(efficacy);
             updateEstimator(estimator);
+            updateWindows(windows);
+            updateMcp(mcp);
             const now = new Date();
             const mode = live ? "live" : (wsConnected ? "live" : "polling");
-            setText("last-updated", "Updated " + now.toLocaleTimeString() + " · " + mode);
+            // Surface windows freshness so staleness is visible at a glance.
+            let snap = "";
+            if (windows.ok && windows.data) {
+                snap = windows.data.blind === true
+                    ? " · windows BLIND"
+                    : " · windows snapshot " + agoFromSeconds(windows.data.snapshot_age_seconds);
+            }
+            setText("last-updated", "Updated " + now.toLocaleTimeString() + " · " + mode + snap);
         }
 
         // ---- Live WebSocket push ---------------------------------------
@@ -424,8 +811,17 @@
                 wsConnected = true;
                 wsBackoff = 500; // reset backoff on a successful connection
             };
-            socket.onmessage = function () {
-                // A new journal line arrived — pull fresh aggregates immediately.
+            socket.onmessage = function (event) {
+                // A new journal line arrived. Surface it in the live feed first
+                // (so a BLOWN/SAVE is visible the instant it fires), then pull
+                // fresh aggregates from the REST endpoints.
+                if (event && typeof event.data === "string") {
+                    // A frame may carry multiple newline-separated JSONL lines.
+                    const lines = event.data.split("\n");
+                    for (const line of lines) {
+                        if (line.trim() !== "") pushEvent(line);
+                    }
+                }
                 refresh(true);
             };
             socket.onclose = function () {
@@ -445,6 +841,7 @@
         }
 
         function start() {
+            initWindowCharts();
             initBudgetChart();
             initSpendChart();
             initEfficacyChart();
