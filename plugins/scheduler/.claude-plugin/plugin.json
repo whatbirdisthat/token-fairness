@@ -2,7 +2,7 @@
   "$schema": "https://json.schemastore.org/claude-code-plugin.json",
   "name": "scheduler",
   "displayName": "TOKEN-FAIRNESS — The token-aware job scheduler",
-  "version": "0.1.1",
+  "version": "0.1.2",
   "description": "A fair, defensive guardian for a solo builder's usage meter — the standalone successor to CONCIERGE's bash token-scheduler, ported to a single tested Rust binary (tf). Before any wide fan-out it ESTIMATES cost (with an estimate→actual EWMA that converges over the shared ~/.claude/state/i2p-cost/calibration.json), REQUIRES an explicit +Xk budget, throttles waves (≤4, not 130), and GATES every wave against the LIVE rolling rate-limit window (fail-closed) — halting before a paid lockout and resuming cheaply from a per-job ledger (.i2p/jobs/<id>.json) that records only what's LEFT. Supervised off-peak (22:00–08:00) runs reserve a morning allowance. The live signal reaches non-hook code via a freshness-stamped snapshot (a Stop/SessionStart/PostToolUse hook, no-op when the payload lacks rate_limits); a PreToolUse(Agent|Task) backstop auto-denies a spawn at the live ceiling. Scheduled jobs are DURABLE & session-safe (project .i2p/scheduled-jobs.json + a per-machine index), re-armed by a SessionStart report after a crash/restart, and OS-cron-installable so they fire with Claude closed. A Stop hook writes session.json .tokens — the actual-spend signal that makes convergence work. Determinism is proven by cargo frozen-vectors + a byte-for-byte differential against the original bash. /schedule routes a job; the token-scheduler skill is the discipline that calls tf.",
   "author": {
     "name": "whatbirdisthat",
