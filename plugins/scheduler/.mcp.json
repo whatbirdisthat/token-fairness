@@ -1,0 +1,11 @@
+{
+  "mcpServers": {
+    "tf": {
+      "command": "bash",
+      "args": [
+        "${CLAUDE_PLUGIN_ROOT}/hooks/tf-hook.sh",
+        "mcp"
+      ]
+    }
+  }
+}
