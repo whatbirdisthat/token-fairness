@@ -199,3 +199,39 @@ approved plan file.
 
 ### Development Plan Reference
 `/home/user/.claude/plans/i-want-to-add-glistening-valiant.md` (approved 2026-06-14).
+
+---
+
+## [3] Statusline → snapshot bridge (feed the dashboard windows + live risk widget)
+> STATUS: IN PROGRESS
+> ADDED: 2026-06-14
+> LAST UPDATED: 2026-06-14
+> PRIORITY: HIGH
+> GITHUB_ISSUE: #13
+> DEPENDS ON: [2] (the dashboard windows this feeds; PR #12)
+
+**Brief Description**
+The dashboard's account-wide 5h/weekly gauges (item [2]) sit BLIND because Claude Code delivers the
+live `.rate_limits` signal only to the statusline's stdin, not to hook payloads — so the hook-driven
+`tf snapshot` no-ops and `ratelimit-snapshot.json` is never written. A shipped statusline widget
+pipes that stdin into `tf snapshot` (throttled) on each render, feeding the sink and the real-time
+web report, and renders a combined-risk mini-bar + sync age so the bridge is self-evidently alive.
+
+### Acceptance Criteria
+1. A statusline widget, installed idempotently on SessionStart into
+   `~/.claude/state/statusline-widgets.d/00-tf-ratelimit.sh` (tf-hook.sh path baked at install time).
+2. On render with `.rate_limits` present, it writes `ratelimit-snapshot.json` (+ `windows.json`,
+   `signal-findings.json`) via `tf snapshot`, throttled (~15s, `I2P_STATUSLINE_SNAPSHOT_THROTTLE_SECONDS`).
+3. `tf budget status` and the dashboard `/api/windows` go BLIND→fresh (verified 77%/21%); the
+   Lockout-Risk gauges light up within ~1.5s of the first bridged render.
+4. Visual: `⬢ tf ▰▰▰▰▱▱ NN% ⇡Ns` — combined-risk (worst of 5h/7d) mini-bar + worst-window %,
+   color-coded (green <60 / amber 60-84 / red ≥85) + sync age; `◌BLIND` when no/stale snapshot;
+   nothing on no-signal payloads.
+5. Fail-open: never exits non-zero, never blocks the statusline; `verify-prereqs` GREEN; `bash -n`
+   clean. No Rust change (reuses `tf snapshot`); hook + dashboard binaries unaffected.
+
+### Implementation Notes
+Mirrors the concierge statusline install/drift pattern and the throttle-stamp pattern. Widget sorts
+first among widgets (`00-` prefix) — leftmost the widget mechanism allows. True line-1 top-left needs
+an upstream change to the concierge-owned renderer (optional follow-up). Plan:
+`/home/user/.claude/plans/i-want-to-add-glistening-valiant.md`.
